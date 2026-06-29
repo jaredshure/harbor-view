@@ -1,0 +1,69 @@
+# Harbor View refresh loop -- the data/render layer.
+#
+# Runs harbor_view.appliance.refresh_loop forever: initializes the
+# configured VesselProvider once, then renders to
+# /var/lib/harbor-view/harbor_view.png on a timer (default every 60
+# seconds), per Sprint 5's brief. This service does NOT touch the
+# display -- see harbor-view-kiosk.service / xinitrc for that. The two
+# are intentionally separate units: the render loop can restart
+# independently of the display session, and vice versa, without
+# tearing down the other.
+#
+# Install: see docs/installation.md. In short:
+#   sudo cp harbor-view-render.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now harbor-view-render.service
+
+[Unit]
+Description=Harbor View - render loop
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=harborview
+Group=harborview
+
+# EnvironmentFile is optional -- absence is not an error, so a fresh
+# install without any configuration still starts (using the
+# placeholder provider, per provider_selection.py's documented
+# default). See deploy/harbor-view.env.example.
+EnvironmentFile=-/etc/harbor-view/harbor-view.env
+
+WorkingDirectory=/opt/harbor-view
+# No pyproject.toml exists yet (see TASKS.md, Task 001b), so
+# harbor_view isn't `pip install`-ed into the venv -- PYTHONPATH points
+# straight at src/, matching how every other sprint has run this
+# project (`PYTHONPATH=src python3 ...`). Revisit this line when Task
+# 001b lands and the package becomes properly installable.
+Environment=PYTHONPATH=/opt/harbor-view/src
+ExecStart=/opt/harbor-view/venv/bin/python3 -m harbor_view.appliance.refresh_loop
+
+# Requirement 6 ("log errors without interrupting the display"): a
+# render failure is already caught and logged *inside* the loop
+# (refresh_loop.render_once), so the process itself should basically
+# never exit on its own. Restart=on-failure is a second, OS-level
+# safety net in case something escapes that handling (e.g. the Python
+# interpreter itself segfaulting) -- the appliance should recover from
+# that too, not stay down.
+Restart=on-failure
+RestartSec=10
+
+# Hardening: this process only needs to read its own config, talk to
+# the network (for AISProvider), and write image files under
+# /var/lib/harbor-view. It has no business touching the rest of the
+# filesystem.
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/harbor-view
+ProtectHome=true
+
+# journald captures stdout/stderr; refresh_loop's own logging module
+# output lands here too (see docs/deployment.md for `journalctl`
+# usage).
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=harbor-view-render
+
+[Install]
+WantedBy=multi-user.target

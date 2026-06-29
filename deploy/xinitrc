@@ -1,0 +1,19 @@
+#!/bin/sh
+# Harbor View's X session -- intentionally just enough X to put feh
+# on screen, with no window manager and no desktop environment.
+#
+# Installed as ~harborview/.xinitrc; started by ~harborview/.bash_profile
+# via `startx -- -nocursor` on console autologin (the -nocursor flag
+# disables the mouse cursor at the X server level itself -- see
+# docs/deployment.md for why this appliance layers that with feh's own
+# --hide-pointer too). See docs/deployment.md for the full picture.
+
+# Disable all forms of screen blanking/power-saving so the display
+# never goes dark -- "open full screen" implicitly means "stay open,"
+# and a picture frame that blanks itself after 10 minutes would not
+# read as a finished appliance.
+xset -dpms
+xset s off
+xset s noblank
+
+exec /opt/harbor-view/deploy/harbor-view-kiosk.sh

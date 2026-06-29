@@ -1,0 +1,30 @@
+# Harbor View runtime dependencies.
+#
+# This is a plain requirements.txt rather than a pyproject.toml because
+# proper packaging (Task 001b in TASKS.md) is still open work. This
+# file exists so "what do I need to install to run this" has one
+# honest answer in the meantime; it should be folded into
+# pyproject.toml when that task is picked up, not maintained alongside
+# it indefinitely.
+#
+# Install with: pip install -r requirements.txt
+#   (add --break-system-packages if your environment requires it, or
+#   use a virtualenv)
+
+# Rendering (Sprints 1-2.5)
+matplotlib
+numpy
+scipy
+
+# Live AIS provider (Sprint 4) -- harbor_view.providers.ais.AISProvider
+# connects to AISStream.io's WebSocket feed. `websockets` is a small,
+# widely-used, single-purpose async websocket client with no further
+# dependencies of its own -- the minimal thing that does this job, per
+# CLAUDE.md's "justify any new dependency" guidance. PlaceholderProvider
+# and the rest of Harbor View do not need it; it's imported lazily
+# inside AISProvider so the rest of the app still runs without it
+# installed (see providers/ais.py).
+websockets
+
+# Testing (not required to run Harbor View itself)
+pytest

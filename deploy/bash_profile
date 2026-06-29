@@ -1,0 +1,25 @@
+# Harbor View console autologin hook.
+#
+# Installed as ~harborview/.bash_profile. Raspberry Pi OS's console
+# autologin logs the `harborview` user into a bash shell on tty1 at
+# boot, with no desktop and no login screen -- this file is what turns
+# that bare shell into "the kiosk starts." It deliberately only runs
+# `startx` when:
+#   - there is no X session already running ($DISPLAY unset), and
+#   - this is really tty1 (the physical console), not an SSH session
+#     or a different virtual terminal.
+# Without that second check, logging in over SSH would also try to
+# start a competing X session, which is not what anyone wants.
+#
+# The loop below restarts the X session if it ever exits (a crashed
+# feh, an X server hiccup) -- mirroring harbor-view-render.service's
+# Restart=on-failure, so the DISPLAY layer is just as self-healing as
+# the render layer, per the brief's "behave like a finished product"
+# goal. `sleep 2` avoids a tight crash-restart-crash loop from pegging
+# the CPU if something is persistently broken. See docs/deployment.md.
+if [ -z "${DISPLAY:-}" ] && [ "$(tty)" = "/dev/tty1" ]; then
+    while true; do
+        startx -- -nocursor
+        sleep 2
+    done
+fi
