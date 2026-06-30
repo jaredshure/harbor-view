@@ -276,6 +276,11 @@ class AISProvider(VesselProvider):
             )
             return []
 
+        # Snapshot which MMSIs already had position/static data so we can
+        # report what each listen window actually added.
+        pre_position = {m for m, p in self._cache.items() if p.latitude is not None}
+        pre_static = {m for m, p in self._cache.items() if p.ais_type_code is not None}
+
         try:
             # _collect merges new messages directly into self._cache.
             asyncio.run(self._collect(self._cache))
@@ -303,16 +308,25 @@ class AISProvider(VesselProvider):
         ]
         for mmsi in stale_mmsis:
             del self._cache[mmsi]
-        if stale_mmsis:
-            logger.debug(
-                "AISProvider evicted %d stale vessel(s) from cache.",
-                len(stale_mmsis),
-            )
 
+        # Per-cycle cache breakdown: how the cache grew and what's drawable.
+        has_position = {m for m, p in self._cache.items() if p.latitude is not None}
+        has_static = {m for m, p in self._cache.items() if p.ais_type_code is not None}
+        has_both = has_position & has_static
+        new_positions = has_position - pre_position
+        new_static = has_static - pre_static
         vessels = [p.to_vessel() for p in self._cache.values() if p.is_drawable()]
         logger.info(
-            "AISProvider: %d vessel(s) in cache, %d drawable.",
-            len(self._cache), len(vessels),
+            "AISProvider cache: total=%d  position=%d  static=%d  both=%d  "
+            "drawable=%d  new_position=%d  new_static=%d  evicted=%d",
+            len(self._cache),
+            len(has_position),
+            len(has_static),
+            len(has_both),
+            len(vessels),
+            len(new_positions),
+            len(new_static),
+            len(stale_mmsis),
         )
         return vessels
 
