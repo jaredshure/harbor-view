@@ -6,10 +6,15 @@ logic is tested by feeding `_handle_message` raw JSON strings directly
 examples); connection failures are tested by monkeypatching
 `AISProvider._collect` so `get_vessels()`'s error handling is exercised
 without touching a socket.
+
+Sprint 6 adds cache tests that drive `get_vessels()` through successive
+monkeypatched `_collect()` calls to confirm that ShipStaticData
+learned in one window survives into the next.
 """
 from __future__ import annotations
 
 import json
+import time
 
 import pytest
 
@@ -63,11 +68,13 @@ def test_custom_bbox_env_is_parsed(monkeypatch):
 def test_connection_failure_returns_empty_list_not_an_exception(monkeypatch):
     """Simulates ANY failure during _collect() (network, auth, DNS --
     doesn't matter which) and confirms get_vessels() degrades to an
-    empty list rather than letting the exception propagate.
+    empty list rather than letting the exception propagate.  A fresh
+    provider with an empty cache still returns [] on failure (same as
+    Sprint 4).
     """
     provider = AISProvider(api_key="x")
 
-    async def _boom():
+    async def _boom(cache):
         raise ConnectionRefusedError("simulated network failure")
 
     monkeypatch.setattr(provider, "_collect", _boom)
@@ -77,12 +84,13 @@ def test_connection_failure_returns_empty_list_not_an_exception(monkeypatch):
 
 def test_get_vessels_never_raises_for_any_exception_type(monkeypatch):
     """A broader sweep than the test above -- several different
-    exception types, all of which must be swallowed into [].
+    exception types, all of which must be swallowed.  Fresh provider,
+    empty cache, so the result is [] in every case.
     """
     for exc in (TimeoutError("x"), ValueError("x"), OSError("x"), RuntimeError("x")):
         provider = AISProvider(api_key="x")
 
-        async def _boom(exc=exc):
+        async def _boom(cache, exc=exc):
             raise exc
 
         monkeypatch.setattr(provider, "_collect", _boom)
@@ -274,3 +282,140 @@ def test_unavailable_speed_is_not_recorded():
     partials = {}
     provider._handle_message(msg, partials)
     assert partials["6"].speed_kn is None
+
+
+# ---------------------------------------------------------------------------
+# Sprint 6 — persistent cache
+# ---------------------------------------------------------------------------
+
+def test_ship_static_data_in_cache_enables_drawable_on_next_call(monkeypatch):
+    """Core Sprint 6 requirement: once ShipStaticData is received in
+    one listen window, the vessel remains drawable in subsequent
+    windows that only deliver PositionReports.  The AIS type code and
+    name from the first window must survive into the second.
+    """
+    provider = _provider()
+
+    async def first_window(cache):
+        provider._handle_message(_POSITION_REPORT, cache)
+        provider._handle_message(_SHIP_STATIC_DATA, cache)
+
+    monkeypatch.setattr(provider, "_collect", first_window)
+    vessels = provider.get_vessels()
+    assert len(vessels) == 1
+    assert vessels[0].vessel_type is VesselType.CARGO
+
+    # Second window: only a PositionReport arrives -- no ShipStaticData.
+    async def second_window(cache):
+        provider._handle_message(_POSITION_REPORT, cache)
+
+    monkeypatch.setattr(provider, "_collect", second_window)
+    vessels = provider.get_vessels()
+    assert len(vessels) == 1  # still drawable: type code came from cache
+    assert vessels[0].vessel_type is VesselType.CARGO
+    assert vessels[0].name == "TEST VESSEL"
+
+
+def test_cache_persists_across_multiple_get_vessels_calls(monkeypatch):
+    """The cache entry for a known MMSI must survive repeated
+    get_vessels() calls and remain accessible by MMSI.
+    """
+    provider = _provider()
+
+    async def window(cache):
+        provider._handle_message(_POSITION_REPORT, cache)
+        provider._handle_message(_SHIP_STATIC_DATA, cache)
+
+    monkeypatch.setattr(provider, "_collect", window)
+    provider.get_vessels()
+    assert "367719770" in provider._cache
+
+    monkeypatch.setattr(provider, "_collect", window)
+    provider.get_vessels()
+    assert "367719770" in provider._cache
+
+
+def test_stale_vessels_are_evicted(monkeypatch):
+    """Vessels not seen for longer than stale_seconds must be removed
+    from the cache so a vessel that has left the area does not remain
+    on the chart indefinitely.
+    """
+    provider = AISProvider(
+        api_key="x",
+        bounding_box=((25.85, -80.30), (26.45, -79.85)),
+        stale_seconds=10.0,
+    )
+
+    async def first_window(cache):
+        provider._handle_message(_POSITION_REPORT, cache)
+        provider._handle_message(_SHIP_STATIC_DATA, cache)
+
+    monkeypatch.setattr(provider, "_collect", first_window)
+    vessels = provider.get_vessels()
+    assert len(vessels) == 1
+
+    # Artificially age the cache entry past the staleness threshold.
+    provider._cache["367719770"].last_seen_unix = time.time() - 20.0
+
+    async def empty_window(cache):
+        pass  # no new messages arrive this cycle
+
+    monkeypatch.setattr(provider, "_collect", empty_window)
+    vessels = provider.get_vessels()
+    assert "367719770" not in provider._cache
+    assert vessels == []
+
+
+def test_connection_failure_with_populated_cache_returns_cached_vessels(monkeypatch):
+    """If the connection fails but the cache is not yet stale, the
+    provider must return whatever drawable vessels it already knows
+    about rather than clearing to an empty list.  This keeps the chart
+    populated during transient network hiccups.
+    """
+    provider = _provider()
+
+    async def first_window(cache):
+        provider._handle_message(_POSITION_REPORT, cache)
+        provider._handle_message(_SHIP_STATIC_DATA, cache)
+
+    monkeypatch.setattr(provider, "_collect", first_window)
+    assert len(provider.get_vessels()) == 1
+
+    async def boom(cache):
+        raise ConnectionRefusedError("network down")
+
+    monkeypatch.setattr(provider, "_collect", boom)
+    vessels = provider.get_vessels()
+    assert len(vessels) == 1  # cached vessel survives the failure
+    assert vessels[0].name == "TEST VESSEL"
+
+
+def test_unmapped_vessel_type_never_enters_drawable_pool(monkeypatch):
+    """Fishing/pleasure/sailing vessels (no Harbor View glyph) must
+    never appear in get_vessels() output even after accumulating a
+    complete record in the cache across multiple calls.
+    """
+    provider = _provider()
+    fishing_position = json.dumps({
+        "MessageType": "PositionReport",
+        "MetaData": {"MMSI": 999999999, "ShipName": "FISHY", "latitude": 26.1, "longitude": -80.1},
+        "Message": {"PositionReport": {"TrueHeading": 90, "Cog": 90, "Sog": 4.0, "NavigationalStatus": 0}},
+    })
+    fishing_static = json.dumps({
+        "MessageType": "ShipStaticData",
+        "MetaData": {"MMSI": 999999999, "ShipName": "FISHY", "latitude": 26.1, "longitude": -80.1},
+        "Message": {"ShipStaticData": {"Name": "FISHY", "Type": 30, "Destination": ""}},
+    })
+
+    async def window(cache):
+        provider._handle_message(fishing_position, cache)
+        provider._handle_message(fishing_static, cache)
+
+    monkeypatch.setattr(provider, "_collect", window)
+    vessels = provider.get_vessels()
+    assert vessels == []
+    # The vessel is held in the cache (position + static data received)
+    # but is_drawable() must still return False because AIS type 30
+    # (fishing) has no Harbor View glyph.
+    assert "999999999" in provider._cache
+    assert provider._cache["999999999"].is_drawable() is False

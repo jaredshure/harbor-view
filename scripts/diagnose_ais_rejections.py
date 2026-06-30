@@ -71,7 +71,10 @@ def main() -> None:
     print(f"Listening for {listen:.0f}s…  (this will block until the window closes)")
     print()
 
-    partials: dict[str, _PartialVessel] = asyncio.run(provider._collect())
+    # _collect() now merges into a supplied cache dict rather than
+    # returning one, so we pass a fresh dict to isolate this run.
+    partials: dict[str, _PartialVessel] = {}
+    asyncio.run(provider._collect(partials))
 
     total = len(partials)
     buckets: dict[str, list[_PartialVessel]] = collections.defaultdict(list)
