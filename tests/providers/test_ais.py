@@ -390,6 +390,80 @@ def test_connection_failure_with_populated_cache_returns_cached_vessels(monkeypa
     assert vessels[0].name == "TEST VESSEL"
 
 
+# ---------------------------------------------------------------------------
+# Sprint 6.2 — heading is optional; three-step fallback
+# ---------------------------------------------------------------------------
+
+def test_drawable_when_true_heading_available():
+    """Step 1: vessel with TrueHeading is drawable and uses that value."""
+    provider = _provider()
+    partials = {}
+    provider._handle_message(_POSITION_REPORT, partials)   # TrueHeading=205
+    provider._handle_message(_SHIP_STATIC_DATA, partials)
+    partial = partials["367719770"]
+    assert partial.is_drawable() is True
+    assert partial.to_vessel().heading_deg == 205
+
+
+def test_drawable_when_only_cog_available():
+    """Step 2: TrueHeading=511 (unavailable), COG present — vessel is
+    drawable using COG as the heading.
+    """
+    pos = json.dumps({
+        "MessageType": "PositionReport",
+        "MetaData": {"MMSI": 111111111, "ShipName": "CARGO A",
+                     "latitude": 26.1, "longitude": -80.1},
+        "Message": {"PositionReport": {
+            "TrueHeading": 511, "Cog": 180.0, "Sog": 8.0, "NavigationalStatus": 0,
+        }},
+    })
+    static = json.dumps({
+        "MessageType": "ShipStaticData",
+        "MetaData": {"MMSI": 111111111, "ShipName": "CARGO A",
+                     "latitude": 26.1, "longitude": -80.1},
+        "Message": {"ShipStaticData": {"Name": "CARGO A", "Type": 70, "Destination": "MIAMI"}},
+    })
+    provider = _provider()
+    partials = {}
+    provider._handle_message(pos, partials)
+    provider._handle_message(static, partials)
+    partial = partials["111111111"]
+    assert partial.is_drawable() is True
+    assert partial.to_vessel().heading_deg == 180.0
+
+
+def test_drawable_when_heading_and_cog_both_unavailable():
+    """Step 3: TrueHeading=511 and no COG field at all — vessel is still
+    drawable, rendered with a default orientation of 0° (due north).
+    This is the ASG KHERSON case: a commercial cargo vessel (AIS type
+    70) with a malfunctioning or non-reporting heading sensor.
+    """
+    pos = json.dumps({
+        "MessageType": "PositionReport",
+        "MetaData": {"MMSI": 222222222, "ShipName": "ASG KHERSON",
+                     "latitude": 26.1, "longitude": -80.1},
+        "Message": {"PositionReport": {
+            "TrueHeading": 511, "Sog": 0.0, "NavigationalStatus": 5,
+        }},
+    })
+    static = json.dumps({
+        "MessageType": "ShipStaticData",
+        "MetaData": {"MMSI": 222222222, "ShipName": "ASG KHERSON",
+                     "latitude": 26.1, "longitude": -80.1},
+        "Message": {"ShipStaticData": {"Name": "ASG KHERSON", "Type": 70, "Destination": "PORT EVG"}},
+    })
+    provider = _provider()
+    partials = {}
+    provider._handle_message(pos, partials)
+    provider._handle_message(static, partials)
+    partial = partials["222222222"]
+    assert partial.heading_deg is None           # no usable heading data stored
+    assert partial.is_drawable() is True         # no longer blocked by missing heading
+    vessel = partial.to_vessel()
+    assert vessel.heading_deg == 0.0             # default orientation: due north
+    assert vessel.vessel_type is VesselType.CARGO
+
+
 def test_unmapped_vessel_type_never_enters_drawable_pool(monkeypatch):
     """Fishing/pleasure/sailing vessels (no Harbor View glyph) must
     never appear in get_vessels() output even after accumulating a

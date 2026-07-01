@@ -165,6 +165,32 @@ One new environment variable:
 All other variables (`AISSTREAM_API_KEY`, `HARBOR_VIEW_AIS_BBOX`,
 `HARBOR_VIEW_AIS_LISTEN_SECONDS`) are unchanged.
 
+## Amendment — Sprint 6.2: heading is now optional
+
+A live investigation after Sprint 6 merged revealed a commercial cargo vessel
+(ASG KHERSON, AIS type 70) that was present in the cache with both a
+`PositionReport` and a `ShipStaticData` but still not drawable. The rejection
+reason: `heading_deg` was `None` because the vessel's PositionReports carried
+`TrueHeading=511` ("not available") and no COG field.
+
+**Decision**: heading is now an optional rendering attribute, not a drawable
+requirement. The three-step fallback that already existed in `_handle_message`
+(1. TrueHeading, 2. COG) is extended with a third step (3. default to 0°/north)
+applied at render time in `to_vessel()`.
+
+Heading is treated as an optional rendering attribute. When unavailable, Harbor
+View renders the vessel with a default orientation rather than suppressing it
+entirely, because many legitimate AIS targets (especially anchored commercial
+vessels) report heading as unavailable.
+
+`_PartialVessel.heading_deg` remains `None` in the cache when no heading data
+has been received. The default of `0.0` is applied only in `to_vessel()` when
+constructing a `Vessel` for the renderer; this means any subsequent
+`PositionReport` that does carry real heading data will correctly update the
+stored value.
+
+AIS type filtering, name requirements, and position requirements are unchanged.
+
 ## Files changed
 
 ```
