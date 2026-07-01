@@ -328,6 +328,61 @@ class AISProvider(VesselProvider):
             len(new_static),
             len(stale_mmsis),
         )
+        # Sprint 6.1 diagnostic: for every vessel with both position and
+        # static data, log drawable status and the specific failure reason.
+        # Investigation only -- does not change behavior or the returned list.
+        if has_both:
+            reject_counts: dict[str, int] = {
+                "missing heading": 0,
+                "unmapped vessel type": 0,
+                "missing name": 0,
+                "other": 0,
+            }
+            for mmsi in sorted(has_both):
+                p = self._cache[mmsi]
+                mapped_type = vessel_type_for_ais_code(p.ais_type_code)
+                drawable = p.is_drawable()
+                reason: str | None = None
+                if not drawable:
+                    if p.heading_deg is None:
+                        reason = "missing heading"
+                    elif not p.name or not p.name.strip():
+                        reason = "missing name"
+                    elif mapped_type is None:
+                        reason = "unmapped vessel type"
+                    else:
+                        reason = "other"
+                    reject_counts[reason] += 1
+                hv_type_str = mapped_type.value.upper() if mapped_type is not None else "none"
+                logger.info(
+                    "  MMSI=%-12s  name=%-28s  lat=%8.4f  lon=%9.4f  "
+                    "heading=%-8s  ais_type=%-4s  hv_type=%-8s  drawable=%s%s",
+                    mmsi,
+                    repr(p.name),
+                    p.latitude,
+                    p.longitude,
+                    str(p.heading_deg) if p.heading_deg is not None else "none",
+                    str(p.ais_type_code),
+                    hv_type_str,
+                    "yes" if drawable else "no",
+                    f"  reason={reason}" if reason else "",
+                )
+            logger.info(
+                "Rejection summary (both=true, drawable=false):\n"
+                "  %-30s  %s\n"
+                "  %s\n"
+                "  %-30s  %d\n"
+                "  %-30s  %d\n"
+                "  %-30s  %d\n"
+                "  %-30s  %d",
+                "Reason", "Count",
+                "-" * 40,
+                "missing heading", reject_counts["missing heading"],
+                "unmapped vessel type", reject_counts["unmapped vessel type"],
+                "missing name", reject_counts["missing name"],
+                "other", reject_counts["other"],
+            )
+
         return vessels
 
     async def _collect(self, cache: dict[str, _PartialVessel]) -> None:
