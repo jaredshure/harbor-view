@@ -3,12 +3,10 @@
 This is the ordered implementation plan. Tasks should generally be done
 in sequence — later tasks assume earlier ones are complete.
 
-**Current status: Tasks 000, 001, 003, 005, 006, 007, and 010 done
-(Task 003's live-data verification is implemented but unobserved
-end-to-end in this sandbox; Task 010's display layer is implemented
-but unobserved on real Pi hardware -- see each entry below). Task 008
-in progress. Task 002, 004, and 009 still open. See each task below
-for specifics.**
+**Current status: Tasks 000, 001, 003, 005, 006, 007, and 010 done;
+Sprint 6 (persistent AIS cache) complete -- see docs/sprint-006-notes.md.
+Task 008 in progress. Task 002, 004, and 009 still open. See each task
+below for specifics.**
 
 ## Conventions for this file
 

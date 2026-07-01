@@ -2,21 +2,43 @@
 
 Connects to AISStream.io's public WebSocket feed
 (wss://stream.aisstream.io/v0/stream), listens for a short window,
-merges position and static-data messages per vessel, and returns
-whatever complete, drawable vessels it collected as plain `Vessel`
-objects. See docs/sprint-004-notes.md for the full writeup, including
-why a streaming API is wrapped in something `get_vessels()` (a
-synchronous, single-shot call) can use.
+merges position and static-data messages per vessel into a persistent
+in-memory cache, and returns the drawable vessels from that cache.
+See docs/sprint-004-notes.md for the original design writeup and
+docs/sprint-006-notes.md for the cache architecture added in Sprint 6.
 
-Failure handling, per the Sprint 4 brief: ANY failure -- missing API
-key, DNS/network failure, auth rejection, malformed messages, a listen
-window that times out with nothing collected -- results in `[]`, never
-an exception and never a silent fallback to placeholder data. An empty
-harbor is treated as a valid, honest state: it means "nothing
-confirmed in view," not "nothing is happening." Errors are logged via
-the standard `logging` module rather than printed, so a deployment can
-decide how/whether to surface them without Harbor View's own code
-needing to change.
+Cache design (Sprint 6)
+-----------------------
+AIS splits position ("where is it, which way is it heading") from
+static data ("what is it called, what kind of vessel is it") across
+two message types that arrive at very different rates: PositionReport
+every few seconds for a moving Class A vessel, ShipStaticData roughly
+every six minutes.  With a 12-second listen window, only vessels whose
+six-minute static cycle happened to land inside that one window were
+ever drawable.
+
+The fix: keep a `dict[str, _PartialVessel]` keyed by MMSI as instance
+state.  Each get_vessels() call merges newly-received messages into
+this cache rather than discarding all state when the listen window
+closes.  A vessel's type code and name, once learned from a single
+ShipStaticData message, stay in the cache for subsequent calls that
+only deliver PositionReports.  Vessels not seen in any message for
+longer than `_DEFAULT_STALE_SECONDS` (15 minutes) are evicted so that
+a vessel that has left the area does not linger on the chart
+indefinitely.
+
+The refresh loop (harbor_view.appliance.refresh_loop) already
+constructs the provider once and reuses it for the process lifetime,
+so the cache naturally warms across repeated get_vessels() calls.
+
+Failure handling
+----------------
+If the connection to AISStream.io fails, get_vessels() logs the
+exception and returns whatever is already in the cache rather than
+clearing it.  A fresh provider with an empty cache still returns []
+on connection failure (same as Sprint 4).  This preserves the
+"empty harbor is a valid state" principle while not discarding
+hard-won cache state on transient network hiccups.
 """
 from __future__ import annotations
 
@@ -51,6 +73,15 @@ _DEFAULT_BBOX = ((25.85, -80.30), (26.45, -79.85))
 # "give the renderer something" and "don't block a render for minutes."
 # Overridable via HARBOR_VIEW_AIS_LISTEN_SECONDS.
 _DEFAULT_LISTEN_SECONDS = 12.0
+
+# How long a vessel can be absent from the AIS feed before it is
+# considered gone and removed from the cache.  15 minutes gives the
+# vessel's six-minute ShipStaticData cycle two full transmissions
+# worth of margin before eviction, and is short enough that a vessel
+# that leaves the bounding box does not linger on the chart for a
+# significant fraction of a tidal cycle.  Overridable via
+# HARBOR_VIEW_AIS_STALE_SECONDS.
+_DEFAULT_STALE_SECONDS = 900.0
 
 # AISStream requires the subscription message within 3 seconds of the
 # socket opening, and connecting/authenticating can itself take a
@@ -172,7 +203,7 @@ class AISProvider(VesselProvider):
     """Live vessel data from AISStream.io.
 
     Configuration is read from environment variables (never hardcoded
-    -- see docs/sprint-004-notes.md):
+    -- see docs/sprint-004-notes.md and docs/sprint-006-notes.md):
 
       AISSTREAM_API_KEY          required; no default. If unset,
                                   get_vessels() logs a warning and
@@ -183,11 +214,16 @@ class AISProvider(VesselProvider):
                                   Everglades / Fort Lauderdale Beach.
       HARBOR_VIEW_AIS_LISTEN_SECONDS
                                   optional float; defaults to 12.
+      HARBOR_VIEW_AIS_STALE_SECONDS
+                                  optional float; defaults to 900 (15
+                                  minutes).  Vessels not seen in any
+                                  AIS message for longer than this
+                                  threshold are evicted from the cache.
 
-    Every failure mode -- no key, unreachable host, auth rejected,
-    malformed JSON, nothing collected before the listen window ends --
-    results in an empty list, logged at WARNING or ERROR, never an
-    exception raised to the caller.
+    Connection failures (no key, unreachable host, auth rejected,
+    malformed JSON) are logged but do not raise.  A provider with a
+    non-empty cache returns cached vessels on failure; a fresh provider
+    with an empty cache returns [].
     """
 
     def __init__(
@@ -195,6 +231,7 @@ class AISProvider(VesselProvider):
         api_key: str | None = None,
         bounding_box: tuple[tuple[float, float], tuple[float, float]] | None = None,
         listen_seconds: float | None = None,
+        stale_seconds: float | None = None,
     ) -> None:
         # Explicit constructor args are supported for tests and for
         # callers that already have configuration in hand; the normal
@@ -214,6 +251,21 @@ class AISProvider(VesselProvider):
                     raw, _DEFAULT_LISTEN_SECONDS,
                 )
                 self._listen_seconds = _DEFAULT_LISTEN_SECONDS
+        if stale_seconds is not None:
+            self._stale_seconds = stale_seconds
+        else:
+            raw = os.environ.get("HARBOR_VIEW_AIS_STALE_SECONDS")
+            try:
+                self._stale_seconds = float(raw) if raw else _DEFAULT_STALE_SECONDS
+            except ValueError:
+                logger.warning(
+                    "HARBOR_VIEW_AIS_STALE_SECONDS=%r is not a number; using %.0fs.",
+                    raw, _DEFAULT_STALE_SECONDS,
+                )
+                self._stale_seconds = _DEFAULT_STALE_SECONDS
+        # Persistent per-vessel state, keyed by MMSI.  Survives across
+        # get_vessels() calls for the lifetime of this provider instance.
+        self._cache: dict[str, _PartialVessel] = {}
 
     def get_vessels(self) -> list[Vessel]:
         if not self._api_key:
@@ -224,34 +276,67 @@ class AISProvider(VesselProvider):
             )
             return []
 
+        # Snapshot which MMSIs already had position/static data so we can
+        # report what each listen window actually added.
+        pre_position = {m for m, p in self._cache.items() if p.latitude is not None}
+        pre_static = {m for m, p in self._cache.items() if p.ais_type_code is not None}
+
         try:
-            partials = asyncio.run(self._collect())
+            # _collect merges new messages directly into self._cache.
+            asyncio.run(self._collect(self._cache))
         except Exception:
             # Deliberately broad: ANY failure here (DNS, TCP, TLS,
             # websocket handshake/auth rejection, asyncio plumbing,
             # an unexpected exception from a malformed message we
-            # didn't anticipate) must degrade to an empty harbor, not
-            # propagate to the renderer. The specific exception is
-            # still logged with a full traceback for diagnosis.
+            # didn't anticipate) must not propagate to the renderer.
+            # Unlike Sprint 4, we do NOT return [] immediately: the
+            # cache may already have valid vessel data from a previous
+            # successful call, and discarding that on a transient
+            # network failure would make the chart go blank
+            # unnecessarily.  We log the failure, then fall through to
+            # the eviction and drawable-filter steps below.
             logger.exception(
                 "AISProvider failed to retrieve live vessel data; "
-                "returning an empty vessel list."
+                "returning vessels from cache."
             )
-            return []
 
-        vessels = [p.to_vessel() for p in partials.values() if p.is_drawable()]
+        # Evict vessels not seen within the staleness window.
+        now = time.time()
+        stale_mmsis = [
+            mmsi for mmsi, p in self._cache.items()
+            if now - p.last_seen_unix > self._stale_seconds
+        ]
+        for mmsi in stale_mmsis:
+            del self._cache[mmsi]
+
+        # Per-cycle cache breakdown: how the cache grew and what's drawable.
+        has_position = {m for m, p in self._cache.items() if p.latitude is not None}
+        has_static = {m for m, p in self._cache.items() if p.ais_type_code is not None}
+        has_both = has_position & has_static
+        new_positions = has_position - pre_position
+        new_static = has_static - pre_static
+        vessels = [p.to_vessel() for p in self._cache.values() if p.is_drawable()]
         logger.info(
-            "AISProvider collected %d raw vessel record(s), %d drawable.",
-            len(partials), len(vessels),
+            "AISProvider cache: total=%d  position=%d  static=%d  both=%d  "
+            "drawable=%d  new_position=%d  new_static=%d  evicted=%d",
+            len(self._cache),
+            len(has_position),
+            len(has_static),
+            len(has_both),
+            len(vessels),
+            len(new_positions),
+            len(new_static),
+            len(stale_mmsis),
         )
         return vessels
 
-    async def _collect(self) -> dict[str, _PartialVessel]:
+    async def _collect(self, cache: dict[str, _PartialVessel]) -> None:
         """Open the websocket, subscribe, and accumulate messages for
-        `self._listen_seconds`. Returns whatever partial vessel state
-        was built up, drawable or not -- filtering to drawable-only
-        happens in get_vessels() so this method stays a pure "what did
-        the feed say" collector.
+        `self._listen_seconds` into `cache`.
+
+        Messages are merged directly into `cache` via `_handle_message`,
+        so previously-learned fields (name, AIS type code) are preserved
+        across calls.  Returns None -- the caller owns `cache`.
         """
         # Imported here rather than at module level: this keeps the
         # `websockets` dependency lazy, so importing
@@ -268,8 +353,6 @@ class AISProvider(VesselProvider):
             "BoundingBoxes": [[[lat1, lon1], [lat2, lon2]]],
             "FilterMessageTypes": ["PositionReport", "ShipStaticData"],
         }
-
-        partials: dict[str, _PartialVessel] = {}
 
         async with await asyncio.wait_for(
             websockets.connect(AISSTREAM_URL), timeout=_CONNECT_TIMEOUT_SECONDS
@@ -288,9 +371,7 @@ class AISProvider(VesselProvider):
                     raw = await asyncio.wait_for(ws.recv(), timeout=remaining)
                 except asyncio.TimeoutError:
                     break
-                self._handle_message(raw, partials)
-
-        return partials
+                self._handle_message(raw, cache)
 
     def _handle_message(self, raw, partials: dict[str, _PartialVessel]) -> None:
         """Parse one websocket frame and fold it into `partials`.
