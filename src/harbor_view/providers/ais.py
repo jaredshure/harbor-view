@@ -139,15 +139,19 @@ class _PartialVessel:
     last_seen_unix: float = field(default_factory=time.time)
 
     def is_drawable(self) -> bool:
-        """A vessel is drawable once it has a position, a heading, a
-        name, and an AIS type code we know how to map to a
-        `VesselType`. Anything less and Harbor View has nowhere to put
-        it on the chart or no glyph to draw -- per the brief,
-        incomplete records are dropped rather than guessed at.
+        """A vessel is drawable once it has a position, a name, and an
+        AIS type code we know how to map to a `VesselType`. Anything
+        less and Harbor View has nowhere to put it on the chart or no
+        glyph to draw -- per the brief, incomplete records are dropped
+        rather than guessed at.
+
+        Heading is treated as an optional rendering attribute. When
+        unavailable, Harbor View renders the vessel with a default
+        orientation rather than suppressing it entirely, because many
+        legitimate AIS targets (especially anchored commercial vessels)
+        report heading as unavailable.
         """
         if self.latitude is None or self.longitude is None:
-            return False
-        if self.heading_deg is None:
             return False
         if not self.name or not self.name.strip():
             return False
@@ -168,7 +172,7 @@ class _PartialVessel:
             vessel_type=vessel_type,
             latitude=self.latitude,
             longitude=self.longitude,
-            heading_deg=self.heading_deg,
+            heading_deg=self.heading_deg if self.heading_deg is not None else 0.0,
             origin="",  # AIS has no concept of origin -- see models.py
             destination=destination,
             mmsi=self.mmsi,
@@ -333,7 +337,6 @@ class AISProvider(VesselProvider):
         # Investigation only -- does not change behavior or the returned list.
         if has_both:
             reject_counts: dict[str, int] = {
-                "missing heading": 0,
                 "unmapped vessel type": 0,
                 "missing name": 0,
                 "other": 0,
@@ -344,9 +347,7 @@ class AISProvider(VesselProvider):
                 drawable = p.is_drawable()
                 reason: str | None = None
                 if not drawable:
-                    if p.heading_deg is None:
-                        reason = "missing heading"
-                    elif not p.name or not p.name.strip():
+                    if not p.name or not p.name.strip():
                         reason = "missing name"
                     elif mapped_type is None:
                         reason = "unmapped vessel type"
@@ -373,11 +374,9 @@ class AISProvider(VesselProvider):
                 "  %s\n"
                 "  %-30s  %d\n"
                 "  %-30s  %d\n"
-                "  %-30s  %d\n"
                 "  %-30s  %d",
                 "Reason", "Count",
                 "-" * 40,
-                "missing heading", reject_counts["missing heading"],
                 "unmapped vessel type", reject_counts["unmapped vessel type"],
                 "missing name", reject_counts["missing name"],
                 "other", reject_counts["other"],
