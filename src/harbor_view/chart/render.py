@@ -26,6 +26,7 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
+import matplotlib.colors as mcolors
 from matplotlib.path import Path
 from matplotlib.patches import PathPatch
 from matplotlib.transforms import Affine2D
@@ -149,11 +150,22 @@ def draw_basemap(map_ax, scene, x_min, x_max, y_min, y_max):
     map_ax.set_ylim(y_min, y_max)
     map_ax.set_aspect("equal")
 
-    # --- Ocean base ---
-    map_ax.add_patch(mpatches.Rectangle(
-        (x_min, y_min), x_max - x_min, y_max - y_min,
-        facecolor=COLOR_OCEAN, edgecolor="none", zorder=0,
-    ))
+    # --- Ocean base: coast-to-offshore depth gradient ---
+    # COLOR_OCEAN (lighter) near the barrier island shore, fading to
+    # COLOR_OCEAN_DEEP further offshore. Land polygons at higher z-orders
+    # cover the inland portion; only the ocean fraction is visible.
+    _ocean_cmap = mcolors.LinearSegmentedColormap.from_list(
+        "ocean_depth", [COLOR_OCEAN, COLOR_OCEAN_DEEP]
+    )
+    ocean_grad = np.linspace(0, 1, 400).reshape(1, -1)
+    map_ax.imshow(
+        ocean_grad,
+        extent=[x_min, x_max, y_min, y_max],
+        aspect="auto",
+        cmap=_ocean_cmap,
+        origin="lower",
+        zorder=0,
+    )
 
     # --- Mainland block: from the view's west edge out to mainland_shore.
     # Because mx/my are pinned to exactly y_min..y_max, closing the
