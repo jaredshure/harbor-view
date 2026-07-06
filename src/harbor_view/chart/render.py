@@ -296,11 +296,11 @@ VESSEL_TIER = {
 # loses weight, and route-line opacity/length fades, going down the
 # hierarchy.
 TIER_STYLE = {
-    1: dict(icon_scale=460, name_fs=6.4, detail_fs=5.2, route_alpha=0.34, route_len_mult=6.5, name_weight="bold"),
-    2: dict(icon_scale=380, name_fs=5.6, detail_fs=4.6, route_alpha=0.28, route_len_mult=5.5, name_weight="normal"),
-    3: dict(icon_scale=330, name_fs=5.2, detail_fs=4.4, route_alpha=0.22, route_len_mult=4.5, name_weight="normal"),
-    4: dict(icon_scale=270, name_fs=4.8, detail_fs=4.1, route_alpha=0.18, route_len_mult=3.5, name_weight="normal"),
-    5: dict(icon_scale=240, name_fs=4.5, detail_fs=3.9, route_alpha=0.14, route_len_mult=2.5, name_weight="normal"),
+    1: dict(icon_scale=360, name_fs=6.4, detail_fs=5.2, route_alpha=0.34, route_len_mult=6.5, name_weight="bold"),
+    2: dict(icon_scale=300, name_fs=5.6, detail_fs=4.6, route_alpha=0.28, route_len_mult=5.5, name_weight="normal"),
+    3: dict(icon_scale=260, name_fs=5.2, detail_fs=4.4, route_alpha=0.22, route_len_mult=4.5, name_weight="normal"),
+    4: dict(icon_scale=210, name_fs=4.8, detail_fs=4.1, route_alpha=0.18, route_len_mult=3.5, name_weight="normal"),
+    5: dict(icon_scale=190, name_fs=4.5, detail_fs=3.9, route_alpha=0.14, route_len_mult=2.5, name_weight="normal"),
 }
 
 
