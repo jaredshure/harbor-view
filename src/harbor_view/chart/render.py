@@ -41,15 +41,18 @@ OUTPUT_PATH = os.path.join(
 )
 
 # ---------------------------------------------------------------------------
-# Palette — soft, cream/teal NOAA-chart-inspired, deliberately desaturated.
+# Palette — monochrome warm paper, matching the reference design.
+# Sprint 7.4: removed blue-teal ocean fill; ocean and land now share the
+# same warm cream/gray paper tone, differentiated by shoreline strokes and
+# depth contour lines rather than fill color.
 # ---------------------------------------------------------------------------
-COLOR_OCEAN = "#CFE3E8"
-COLOR_OCEAN_DEEP = "#BCD8DF"
+COLOR_OCEAN = "#EAE6DC"
+COLOR_OCEAN_DEEP = "#DEDAD0"
 COLOR_LAND = "#EFE6D0"
-COLOR_ICW_WATER = "#BFDCE3"
+COLOR_ICW_WATER = "#D5D1C7"
 COLOR_SHORE_LINE = "#8C7A56"
-COLOR_CONTOUR = "#6090A8"
-COLOR_LANE = "#8FA9AE"
+COLOR_CONTOUR = "#7A7368"
+COLOR_LANE = "#8A867A"
 COLOR_INK = "#33312C"
 COLOR_INK_SOFT = "#5C5A52"
 COLOR_SIDEBAR_BG = "#F4EFE3"
