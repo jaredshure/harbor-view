@@ -48,7 +48,7 @@ COLOR_OCEAN_DEEP = "#BCD8DF"
 COLOR_LAND = "#EFE6D0"
 COLOR_ICW_WATER = "#BFDCE3"
 COLOR_SHORE_LINE = "#8C7A56"
-COLOR_CONTOUR = "#9FC3CB"
+COLOR_CONTOUR = "#6090A8"
 COLOR_LANE = "#8FA9AE"
 COLOR_INK = "#33312C"
 COLOR_INK_SOFT = "#5C5A52"
@@ -207,27 +207,50 @@ def draw_basemap(map_ax, scene, x_min, x_max, y_min, y_max):
 
 
 def draw_depth_contours(map_ax, x_min, x_max, y_min, y_max, scene):
-    """Very subtle, gently curved depth contours running roughly
-    parallel to the coastline, fading into deeper water offshore.
-    Purely decorative (not derived from real bathymetry) — this is an
-    art piece, not a navigational chart.
+    """Bathymetric-style depth contours spanning the full ocean width,
+    labeled with approximate depths. Purely decorative — art piece, not
+    navigational. Approximate Fort Lauderdale coastal profile.
 
-    Sprint 2.5 (Priority 7): contrast reduced again from Sprint 2 --
-    peak opacity roughly halved once more (0.16 -> 0.09) and the
-    nearest, most-visible contour pulled back so even the closest line
-    starts faint. The intent is that these are noticed only after the
-    viewer has spent several seconds with the chart, not on first
-    glance.
+    Sprint 7.3: extended to cover the full ~6 nm viewport and opacity
+    raised to legible levels, matching the reference design where
+    contour lines are the primary treatment of the ocean surface.
     """
     ox, oy = scene["ocean_shore"]
-    offsets_m = [350, 750, 1300, 2050, 3000, 4200]
+
+    # (offshore_m, depth_label_ft) — approx. Fort Lauderdale shelf profile
+    contour_defs = [
+        (700,   20),
+        (1500,  40),
+        (2500,  60),
+        (3800,  80),
+        (5400, 100),
+        (7200, 120),
+        (9200, 140),
+    ]
+
+    # Label y-positions: spread top-to-bottom so successive labels don't collide
+    label_y_fracs = [0.87, 0.73, 0.58, 0.42, 0.27, 0.14, 0.04]
+
     rng = np.random.default_rng(42)
-    for i, off in enumerate(offsets_m):
-        jitter = rng.normal(0, 25, size=ox.shape)
+    for i, (off, depth_ft) in enumerate(contour_defs):
+        jitter = rng.normal(0, 35, size=ox.shape)
         cx = ox + off + jitter
         cy = oy
-        alpha = max(0.03, 0.09 - i * 0.013)
-        map_ax.plot(cx, cy, color=COLOR_CONTOUR, lw=0.5, alpha=alpha, zorder=5)
+        mask = cx <= x_max
+        if not mask.any():
+            continue
+        alpha = max(0.12, 0.30 - i * 0.023)
+        map_ax.plot(cx[mask], cy[mask], color=COLOR_CONTOUR, lw=0.65,
+                    alpha=alpha, zorder=5)
+        # Depth label near the far-offshore (right) edge
+        label_x = x_min + (x_max - x_min) * 0.95
+        label_y = y_min + (y_max - y_min) * label_y_fracs[i]
+        map_ax.text(
+            label_x, label_y, str(depth_ft),
+            ha="center", va="center",
+            fontsize=5.5, color=COLOR_CONTOUR, alpha=0.60,
+            fontstyle="italic", family=FONT_BODY, zorder=5,
+        )
 
 
 def draw_shipping_lanes(map_ax, x_min, x_max, y_min, y_max):
