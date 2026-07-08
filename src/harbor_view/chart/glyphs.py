@@ -11,47 +11,50 @@ import numpy as np
 from matplotlib.path import Path
 
 
-def _hull_path(length: float, beam: float, bow_taper: float, stern_taper: float = 0.0) -> Path:
-    """A simple elongated hull silhouette, nose at +y."""
+def _noaa_hull(length: float, beam: float, bow_len: float) -> Path:
+    """NOAA-chart-inspired hull outline: sharp pointed bow, flat stern.
+
+    bow_len: distance from tip to shoulder, as a fraction of half-length.
+    Produces a clean 5-vertex polygon readable at very small sizes.
+    """
     hl, hb = length / 2, beam / 2
     verts = [
-        (0, hl),                          # bow tip
-        (hb, hl - bow_taper),             # bow shoulder right
-        (hb, -hl + stern_taper),          # stern right
-        (hb * 0.55, -hl),                 # stern corner right
-        (-hb * 0.55, -hl),                # stern corner left
-        (-hb, -hl + stern_taper),         # stern left
-        (-hb, hl - bow_taper),            # bow shoulder left
-        (0, hl),
+        (0,    hl),            # bow tip
+        (hb,   hl - bow_len),  # starboard shoulder
+        (hb,  -hl),            # stern starboard
+        (-hb, -hl),            # stern port
+        (-hb,  hl - bow_len),  # port shoulder
+        (0,    hl),            # close
     ]
-    codes = [Path.MOVETO] + [Path.LINETO] * (len(verts) - 2) + [Path.CLOSEPOLY]
+    codes = [Path.MOVETO, Path.LINETO, Path.LINETO,
+             Path.LINETO, Path.LINETO, Path.CLOSEPOLY]
     return Path(verts, codes)
 
 
 def cruise_ship_path() -> Path:
-    # Long, full hull with a near-vertical bow and a flat, squared-off
-    # stern (reads as a tall superstructure silhouette).
-    return _hull_path(length=1.0, beam=0.34, bow_taper=0.10, stern_taper=0.42)
+    # Long, moderately wide — gentle bow so the blunt profile reads as a
+    # big vessel even at small scale.
+    return _noaa_hull(length=1.0, beam=0.30, bow_len=0.14)
 
 
 def cargo_ship_path() -> Path:
-    # Long and narrow with a sharp, pronounced bow taper.
-    return _hull_path(length=1.0, beam=0.20, bow_taper=0.34, stern_taper=0.06)
+    # Long and narrow with a pronounced pointed bow.
+    return _noaa_hull(length=1.0, beam=0.18, bow_len=0.30)
 
 
 def tanker_path() -> Path:
-    # Long, full, blunt at both ends — low taper front and back.
-    return _hull_path(length=0.95, beam=0.30, bow_taper=0.08, stern_taper=0.08)
+    # Wide and blunt at both ends — very short bow section.
+    return _noaa_hull(length=0.95, beam=0.32, bow_len=0.08)
 
 
 def tug_path() -> Path:
-    # Short and stubby, blunt bow.
-    return _hull_path(length=0.42, beam=0.30, bow_taper=0.06, stern_taper=0.06)
+    # Short, very wide, almost square — minimal bow.
+    return _noaa_hull(length=0.42, beam=0.32, bow_len=0.06)
 
 
 def pilot_boat_path() -> Path:
-    # Small and sleek, sharp bow.
-    return _hull_path(length=0.40, beam=0.16, bow_taper=0.18, stern_taper=0.03)
+    # Small and sleek with a sharp bow.
+    return _noaa_hull(length=0.40, beam=0.14, bow_len=0.18)
 
 
 GLYPH_BY_KIND = {
