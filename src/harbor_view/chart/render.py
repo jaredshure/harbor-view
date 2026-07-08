@@ -21,6 +21,7 @@ from __future__ import annotations
 import datetime as _dt
 import math
 import os
+from zoneinfo import ZoneInfo
 
 import matplotlib
 matplotlib.use("Agg")
@@ -68,6 +69,10 @@ COLOR_METADATA = "#7A776C"
 
 FONT_DISPLAY = "DejaVu Serif"
 FONT_BODY = "DejaVu Sans"
+
+# Harbor local timezone — respects EST/EDT automatically via IANA name.
+# Override with HARBOR_VIEW_TIMEZONE env var for a different deployment location.
+HARBOR_TIMEZONE = ZoneInfo(os.environ.get("HARBOR_VIEW_TIMEZONE", "America/New_York"))
 
 
 # ---------------------------------------------------------------------------
@@ -351,40 +356,14 @@ def draw_vessel(map_ax, vessel, label_side="right", label_dy=0.0):
     theta = math.radians(vessel.heading_deg)
     sin_t, cos_t = math.sin(theta), math.cos(theta)
 
-    # Priority 3 (Sprint 2.5): faint wake instead of a single straight
-    # dashed "route" line -- two short diverging strokes trailing the
-    # stern, like a real wake, fainter and shorter than the old route
-    # hint so it reads as texture rather than a flight-path overlay.
-    wake_len = scale * style["route_len_mult"] * 0.55
-    wake_spread = scale * 0.16
-    stern_x = x - (scale * 0.18) * sin_t
-    stern_y = y - (scale * 0.18) * cos_t
-    for side in (-1, 1):
-        perp_x, perp_y = cos_t * side, -sin_t * side
-        tip_x = stern_x - wake_len * sin_t + perp_x * wake_spread
-        tip_y = stern_y - wake_len * cos_t + perp_y * wake_spread
-        map_ax.plot([stern_x, tip_x], [stern_y, tip_y], color=COLOR_LANE,
-                    lw=0.55, alpha=style["route_alpha"], solid_capstyle="round",
-                    zorder=8)
-
-    # Hull: softened fill (a hint of ocean blue mixed in rather than
-    # flat cream) and a thinner outline than Sprint 2, so the shape
-    # reads as drawn-on-the-chart rather than a pasted UI marker.
+    # Hull: NOAA-style outline only — no wake, no heading tick.
+    # Consistent stroke weight across all tiers so no vessel reads as
+    # "more important" via line thickness alone.
     transform = (Affine2D().scale(scale).rotate(-theta).translate(x, y)
                  + map_ax.transData)
     patch = PathPatch(path, facecolor=COLOR_VESSEL_FILL, edgecolor=COLOR_INK,
-                       lw=0.8 if tier <= 2 else 0.65, transform=transform, zorder=9)
+                       lw=0.7, transform=transform, zorder=9)
     map_ax.add_patch(patch)
-
-    # Delicate heading indicator: a short fine line extending forward
-    # from the bow, distinct from the hull outline -- a small nautical
-    # convention (course-over-ground tick) rather than a bold arrow.
-    bow_x = x + (scale * 0.55) * sin_t
-    bow_y = y + (scale * 0.55) * cos_t
-    tick_x = x + (scale * 0.95) * sin_t
-    tick_y = y + (scale * 0.95) * cos_t
-    map_ax.plot([bow_x, tick_x], [bow_y, tick_y], color=COLOR_INK_SOFT,
-                lw=0.6, alpha=0.65, zorder=9)
 
     # Label: name set in its tier's weight/size. Softer anchoring than
     # Sprint 2 -- a small fixed gap from the hull, with a hairline
@@ -514,7 +493,7 @@ def draw_sidebar(sidebar_ax, now: _dt.datetime):
     # marginal note than a clock-app readout. Slightly smaller than
     # Sprint 2 so it no longer competes with the title for top billing.
     y -= 0.07
-    time_str = now.strftime("%-I:%M %p") if hasattr(now, "strftime") else str(now)
+    time_str = now.strftime("%-I:%M %p %Z") if hasattr(now, "strftime") else str(now)
     ax.text(0.09, y, time_str, fontsize=18, family=FONT_DISPLAY,
             color=COLOR_INK, ha="left", va="top")
 
@@ -615,7 +594,7 @@ def render(output_path: str = OUTPUT_PATH, vessel_provider: VesselProvider | Non
     draw_fleet(map_ax, vessel_provider.get_vessels())
     draw_home_marker(map_ax, scene)
 
-    draw_sidebar(sidebar_ax, _dt.datetime.now())
+    draw_sidebar(sidebar_ax, _dt.datetime.now(tz=HARBOR_TIMEZONE))
 
     out_dir = os.path.dirname(output_path)
     os.makedirs(out_dir, exist_ok=True)
