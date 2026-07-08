@@ -52,6 +52,19 @@ from harbor_view.chart.render import render
 
 logger = logging.getLogger("harbor_view.appliance.refresh_loop")
 
+
+def _get_render_fn():
+    """Return the render callable selected by HARBOR_VIEW_RENDER_MODE.
+
+    'procedural' (default): the existing matplotlib chart renderer.
+    'hybrid': static artwork background + live vessel overlay.
+    """
+    mode = os.environ.get("HARBOR_VIEW_RENDER_MODE", "procedural").strip().lower()
+    if mode == "hybrid":
+        from harbor_view.chart.render_hybrid import render_hybrid
+        return render_hybrid
+    return render
+
 DEFAULT_OUTPUT_PATH = "/var/lib/harbor-view/harbor_view.png"
 DEFAULT_REFRESH_SECONDS = 60.0
 DEFAULT_PID_FILE = "/var/lib/harbor-view/feh.pid"
@@ -95,7 +108,7 @@ def render_once(output_path: str, vessel_provider) -> bool:
             dir=out_dir, prefix=".harbor_view_tmp_", suffix=".png"
         )
         os.close(fd)  # render() opens the path itself; we just need the name
-        render(output_path=tmp_path, vessel_provider=vessel_provider)
+        _get_render_fn()(output_path=tmp_path, vessel_provider=vessel_provider)
         os.replace(tmp_path, output_path)  # atomic on the same filesystem
         tmp_path = None  # successfully moved; nothing left to clean up
     except Exception:
