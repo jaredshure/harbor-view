@@ -1,19 +1,27 @@
-"""Geometry for the Fort Lauderdale / Port Everglades chart scene.
+"""Coastline geometry for the Harbor View chart scene.
 
 Coordinates are local projected meters in a simple equirectangular
-approximation, origin at the Port Everglades inlet centerline
-(26.0906 N, -80.1095 W). +x = east (offshore), +y = north.
+approximation, origin at the configured viewport center
+(HARBOR_VIEW_VIEWPORT_LAT/LON). +x = east (offshore), +y = north.
 
-This is a hand-built approximation of the real shoreline shape, not a
-literal NOAA chart extract — see docs/task-001-notes.md for why.
+The shoreline control points represent the real Fort Lauderdale
+coastline — this is a hand-built approximation, not a literal NOAA
+chart extract (see docs/task-001-notes.md for why). The viewport
+center shifts which part of that coastline is at the origin, and
+therefore which part of the scene occupies the composition's centre.
 """
 from __future__ import annotations
+
+import os
 
 import numpy as np
 from scipy.interpolate import CubicSpline
 
-REF_LAT = 26.0906
-REF_LON = -80.1095
+# Viewport/projection reference point. Configurable so the composition
+# centre can be tuned without touching rendering code. Reads the same
+# env vars as harbor_view.config.DEFAULT_CONFIG.
+REF_LAT = float(os.environ.get("HARBOR_VIEW_VIEWPORT_LAT", "26.0906"))
+REF_LON = float(os.environ.get("HARBOR_VIEW_VIEWPORT_LON", "-80.1095"))
 _M_PER_DEG_LAT = 111_320.0
 _M_PER_DEG_LON = 111_320.0 * np.cos(np.radians(REF_LAT))
 
