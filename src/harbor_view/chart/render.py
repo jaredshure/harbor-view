@@ -124,8 +124,9 @@ def compute_view_window(map_ax):
     panel with no letterboxing, and the coastline sits left-of-center.
     """
     bbox = map_ax.get_position()
-    panel_w_in = bbox.width * FIG_W_IN
-    panel_h_in = bbox.height * FIG_H_IN
+    fig_w_in, fig_h_in = map_ax.get_figure().get_size_inches()
+    panel_w_in = bbox.width * fig_w_in
+    panel_h_in = bbox.height * fig_h_in
     panel_aspect = panel_h_in / panel_w_in
 
     y_span_m = VIEW_HALF_HEIGHT_NM * 2 * NM

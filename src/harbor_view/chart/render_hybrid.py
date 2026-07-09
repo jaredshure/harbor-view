@@ -4,7 +4,7 @@ Sprint 7 experiment. Enabled via environment variable:
 
     HARBOR_VIEW_RENDER_MODE=hybrid
 
-Loads ``assets/design/harbor-view-reference-bw.PNG`` as the cartographic
+Loads ``assets/harbor-view-reference-bw.PNG`` as the cartographic
 background, then overlays live vessel data on top using the same coordinate
 system and vessel-drawing code as the procedural renderer.
 
@@ -17,12 +17,6 @@ Known limitations (first pass, by design):
     are proportionally smaller as a result.
   - The reference image's sidebar content (time, weather, tide) is static
     artwork; no live values are overlaid in this pass.
-  - The map panel's geographic extent is derived from compute_view_window()
-    using the reference image's figure size. This produces a viewport
-    aspect ratio (≈ 1.78) that differs slightly from the procedural
-    renderer (≈ 1.87), so vessel positions may be offset a few hundred
-    metres from the background coastline. Acceptable for a concept proof;
-    a later pass could calibrate reference tie-points.
 """
 from __future__ import annotations
 
@@ -111,9 +105,9 @@ def render_hybrid(
     map_ax.set_zorder(1)
 
     # Coordinate system: same derivation as the procedural renderer.
-    # compute_view_window() uses the axes physical size in inches, which
-    # differs from the procedural renderer because this figure is smaller.
-    # See module docstring for the known offset this introduces.
+    # compute_view_window() reads the figure size from the axes object
+    # itself, so the viewport aspect ratio is correct for this figure's
+    # actual dimensions rather than the procedural renderer's constants.
     x_min, x_max, y_min, y_max = compute_view_window(map_ax)
     map_ax.set_xlim(x_min, x_max)
     map_ax.set_ylim(y_min, y_max)
