@@ -408,16 +408,23 @@ class AISProvider(VesselProvider):
         _MARGIN_FRAC = 0.018
         _SIDEBAR_FRAC = 0.25
         _FIG_W_IN, _FIG_H_IN = 10.0, 14.0
+        _DPI = 200.0
 
         _map_left = _SIDEBAR_FRAC + _MARGIN_FRAC * 0.6
-        _panel_w_in = (1.0 - _map_left - _MARGIN_FRAC) * _FIG_W_IN
-        _panel_h_in = (1.0 - 2 * _MARGIN_FRAC) * _FIG_H_IN
+        _map_w_frac = 1.0 - _map_left - _MARGIN_FRAC
+        _map_h_frac = 1.0 - 2 * _MARGIN_FRAC
+        _panel_w_in = _map_w_frac * _FIG_W_IN
+        _panel_h_in = _map_h_frac * _FIG_H_IN
         _y_span_m = _VIEW_HALF_HEIGHT_NM * 2 * _NM
         _x_span_m = _y_span_m / (_panel_h_in / _panel_w_in)
         _x_min = -_COAST_FRAC_FROM_LEFT * _x_span_m
         _x_max = _x_min + _x_span_m
         _y_min = -_VIEW_HALF_HEIGHT_NM * _NM
         _y_max = _VIEW_HALF_HEIGHT_NM * _NM
+        _center_x = (_x_min + _x_max) / 2.0
+        _center_y = 0.0
+        _fig_w_px = _FIG_W_IN * _DPI
+        _fig_h_px = _FIG_H_IN * _DPI
 
         # Equirectangular projection matching chart.geometry.
         _REF_LAT, _REF_LON = 26.0906, -80.1095
@@ -428,9 +435,32 @@ class AISProvider(VesselProvider):
             return ((lon - _REF_LON) * _COS_REF * _M_PER_DEG,
                     (lat - _REF_LAT) * _M_PER_DEG)
 
-        def _in_vp(lat: float, lon: float) -> bool:
-            x, y = _to_xy(lat, lon)
+        def _to_pixel(x: float, y: float) -> tuple[int, int]:
+            """Convert map coords (m) to pixel coords in the 2000×2800 output image."""
+            nx = (x - _x_min) / (_x_max - _x_min)
+            ny = (y - _y_min) / (_y_max - _y_min)
+            fig_x = _map_left + nx * _map_w_frac
+            fig_y = _MARGIN_FRAC + ny * _map_h_frac
+            # y-flip: matplotlib origin is bottom-left; image origin is top-left
+            return int(round(fig_x * _fig_w_px)), int(round((1.0 - fig_y) * _fig_h_px))
+
+        def _in_vp(x: float, y: float) -> bool:
             return _x_min <= x <= _x_max and _y_min <= y <= _y_max
+
+        def _outside_info(x: float, y: float) -> tuple[str, float]:
+            """Cardinal directions outside viewport and Euclidean distance from boundary."""
+            dirs = []
+            if y > _y_max:
+                dirs.append("N")
+            if y < _y_min:
+                dirs.append("S")
+            if x > _x_max:
+                dirs.append("E")
+            if x < _x_min:
+                dirs.append("W")
+            dx = max(0.0, x - _x_max, _x_min - x)
+            dy = max(0.0, y - _y_max, _y_min - y)
+            return "".join(dirs), math.sqrt(dx * dx + dy * dy)
 
         _NAV_LABELS: dict[int, str] = {
             0: "UNDERWAY", 1: "AT_ANCHOR", 2: "NOT_UNDER_COMMAND",
@@ -445,7 +475,9 @@ class AISProvider(VesselProvider):
         header = (
             f"{'MMSI':<12}  {'Name':<28}  {'AIS':>3}  {'HV Type':<8}  "
             f"{'Lat':>8}  {'Lon':>9}  {'Hdg':>5}  {'Spd':>5}  "
-            f"{'Nav Status':<22}  {'Age':>6}  {'Rndr':<4}  Reason"
+            f"{'Nav Status':<22}  {'Age':>6}  "
+            f"{'Dist/nm':>7}  {'X/m':>8}  {'Y/m':>8}  {'PxX':>5}  {'PxY':>5}  "
+            f"{'Rndr':<4}  Reason"
         )
         sep = "-" * len(header)
 
@@ -463,7 +495,19 @@ class AISProvider(VesselProvider):
             has_name = bool(p.name and p.name.strip())
             hv_type = vessel_type_for_ais_code(p.ais_type_code)
 
-            in_vp = has_pos and _in_vp(p.latitude, p.longitude)
+            if has_pos:
+                x, y = _to_xy(p.latitude, p.longitude)
+                dist_nm = math.sqrt((x - _center_x) ** 2 + (y - _center_y) ** 2) / _NM
+                px, py = _to_pixel(x, y)
+                in_vp = _in_vp(x, y)
+                dist_nm_str = f"{dist_nm:.2f}"
+                x_str = f"{x:.1f}"
+                y_str = f"{y:.1f}"
+                px_str, py_str = str(px), str(py)
+            else:
+                in_vp = False
+                dist_nm_str = x_str = y_str = px_str = py_str = "—"
+
             if in_vp:
                 n_in_vp_any += 1
 
@@ -479,7 +523,8 @@ class AISProvider(VesselProvider):
                 reason = f"unsupported type ({p.ais_type_code})"
                 n_filtered += 1
             elif not in_vp:
-                reason = "outside viewport"
+                dirs, dist_m = _outside_info(x, y)
+                reason = f"outside viewport [{dirs}, {dist_m:.0f} m]"
                 n_outside_vp += 1
             else:
                 rendered = True
@@ -500,7 +545,9 @@ class AISProvider(VesselProvider):
             print(
                 f"{mmsi:<12}  {name_str:<28}  {ais_str:>3}  {hv_str:<8}  "
                 f"{lat_str:>8}  {lon_str:>9}  {hdg_str:>5}  {spd_str:>5}  "
-                f"{nav_str:<22}  {age_s:>5.0f}s  {'YES' if rendered else 'NO':<4}  {reason}"
+                f"{nav_str:<22}  {age_s:>5.0f}s  "
+                f"{dist_nm_str:>7}  {x_str:>8}  {y_str:>8}  {px_str:>5}  {py_str:>5}  "
+                f"{'YES' if rendered else 'NO':<4}  {reason}"
             )
 
         print(sep)
