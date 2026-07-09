@@ -45,6 +45,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import math
 import os
 import time
 from dataclasses import dataclass, field
@@ -270,6 +271,7 @@ class AISProvider(VesselProvider):
         # Persistent per-vessel state, keyed by MMSI.  Survives across
         # get_vessels() calls for the lifetime of this provider instance.
         self._cache: dict[str, _PartialVessel] = {}
+        self._messages_this_cycle: int = 0
 
     def get_vessels(self) -> list[Vessel]:
         if not self._api_key:
@@ -279,6 +281,8 @@ class AISProvider(VesselProvider):
                 "see docs/sprint-004-notes.md."
             )
             return []
+
+        self._messages_this_cycle = 0
 
         # Snapshot which MMSIs already had position/static data so we can
         # report what each listen window actually added.
@@ -382,7 +386,134 @@ class AISProvider(VesselProvider):
                 "other", reject_counts["other"],
             )
 
+        if os.environ.get("HARBOR_VIEW_DEBUG_AIS"):
+            self._print_debug_table()
+
         return vessels
+
+    def _print_debug_table(self) -> None:
+        """Print a per-vessel AIS reconciliation table to stdout.
+
+        Enabled by setting HARBOR_VIEW_DEBUG_AIS to any non-empty value.
+        Intended for manual comparison against MarineTraffic or another live
+        AIS source; has no effect on rendering.
+        """
+        # Procedural renderer viewport geometry — inlined here to avoid the
+        # circular import that would occur if we imported from chart.render
+        # (which imports from this module). Values must stay in sync with
+        # render.py constants.
+        _NM = 1852.0
+        _VIEW_HALF_HEIGHT_NM = 7.2
+        _COAST_FRAC_FROM_LEFT = 0.21
+        _MARGIN_FRAC = 0.018
+        _SIDEBAR_FRAC = 0.25
+        _FIG_W_IN, _FIG_H_IN = 10.0, 14.0
+
+        _map_left = _SIDEBAR_FRAC + _MARGIN_FRAC * 0.6
+        _panel_w_in = (1.0 - _map_left - _MARGIN_FRAC) * _FIG_W_IN
+        _panel_h_in = (1.0 - 2 * _MARGIN_FRAC) * _FIG_H_IN
+        _y_span_m = _VIEW_HALF_HEIGHT_NM * 2 * _NM
+        _x_span_m = _y_span_m / (_panel_h_in / _panel_w_in)
+        _x_min = -_COAST_FRAC_FROM_LEFT * _x_span_m
+        _x_max = _x_min + _x_span_m
+        _y_min = -_VIEW_HALF_HEIGHT_NM * _NM
+        _y_max = _VIEW_HALF_HEIGHT_NM * _NM
+
+        # Equirectangular projection matching chart.geometry.
+        _REF_LAT, _REF_LON = 26.0906, -80.1095
+        _M_PER_DEG = 111320.0
+        _COS_REF = math.cos(math.radians(_REF_LAT))
+
+        def _to_xy(lat: float, lon: float) -> tuple[float, float]:
+            return ((lon - _REF_LON) * _COS_REF * _M_PER_DEG,
+                    (lat - _REF_LAT) * _M_PER_DEG)
+
+        def _in_vp(lat: float, lon: float) -> bool:
+            x, y = _to_xy(lat, lon)
+            return _x_min <= x <= _x_max and _y_min <= y <= _y_max
+
+        _NAV_LABELS: dict[int, str] = {
+            0: "UNDERWAY", 1: "AT_ANCHOR", 2: "NOT_UNDER_COMMAND",
+            3: "RESTR_MANOEUVRABILITY", 4: "DRAUGHT_CONSTRAINED",
+            5: "MOORED", 6: "AGROUND", 7: "FISHING", 8: "SAILING",
+            15: "UNDEFINED",
+        }
+
+        now = time.time()
+        n_in_vp_any = n_rendered = n_filtered = n_outside_vp = 0
+
+        header = (
+            f"{'MMSI':<12}  {'Name':<28}  {'AIS':>3}  {'HV Type':<8}  "
+            f"{'Lat':>8}  {'Lon':>9}  {'Hdg':>5}  {'Spd':>5}  "
+            f"{'Nav Status':<22}  {'Age':>6}  {'Rndr':<4}  Reason"
+        )
+        sep = "-" * len(header)
+
+        print()
+        print("=" * len(header))
+        print("HARBOR VIEW — AIS DEBUG RECONCILIATION TABLE")
+        print("=" * len(header))
+        print(header)
+        print(sep)
+
+        for mmsi in sorted(self._cache):
+            p = self._cache[mmsi]
+            age_s = now - p.last_seen_unix
+            has_pos = p.latitude is not None and p.longitude is not None
+            has_name = bool(p.name and p.name.strip())
+            hv_type = vessel_type_for_ais_code(p.ais_type_code)
+
+            in_vp = has_pos and _in_vp(p.latitude, p.longitude)
+            if in_vp:
+                n_in_vp_any += 1
+
+            rendered = False
+            reason = ""
+            if not has_pos:
+                reason = "missing position"
+                n_filtered += 1
+            elif not has_name:
+                reason = "missing name"
+                n_filtered += 1
+            elif hv_type is None:
+                reason = f"unsupported type ({p.ais_type_code})"
+                n_filtered += 1
+            elif not in_vp:
+                reason = "outside viewport"
+                n_outside_vp += 1
+            else:
+                rendered = True
+                n_rendered += 1
+
+            ais_str = str(p.ais_type_code) if p.ais_type_code is not None else "—"
+            hv_str = hv_type.value.upper() if hv_type else "none"
+            lat_str = f"{p.latitude:.4f}" if has_pos else "—"
+            lon_str = f"{p.longitude:.4f}" if has_pos else "—"
+            hdg_str = f"{p.heading_deg:.0f}" if p.heading_deg is not None else "—"
+            spd_str = f"{p.speed_kn:.1f}" if p.speed_kn is not None else "—"
+            if p.nav_status_code is not None:
+                nav_str = _NAV_LABELS.get(p.nav_status_code, f"code={p.nav_status_code}")
+            else:
+                nav_str = "—"
+            name_str = (p.name.strip() if p.name else "—")[:28]
+
+            print(
+                f"{mmsi:<12}  {name_str:<28}  {ais_str:>3}  {hv_str:<8}  "
+                f"{lat_str:>8}  {lon_str:>9}  {hdg_str:>5}  {spd_str:>5}  "
+                f"{nav_str:<22}  {age_s:>5.0f}s  {'YES' if rendered else 'NO':<4}  {reason}"
+            )
+
+        print(sep)
+        print()
+        print(f"  Total AIS messages received this cycle : {self._messages_this_cycle}")
+        print(f"  Unique vessels in cache (post-eviction): {len(self._cache)}")
+        print(f"  Vessels inside viewport                : {n_in_vp_any}")
+        print(f"  Vessels rendered                       : {n_rendered}")
+        print(f"  Vessels filtered (missing data/type)   : {n_filtered}")
+        print(f"  Vessels outside viewport               : {n_outside_vp}")
+        print()
+        print("=" * len(header))
+        print()
 
     async def _collect(self, cache: dict[str, _PartialVessel]) -> None:
         """Open the websocket, subscribe, and accumulate messages for
@@ -438,6 +569,8 @@ class AISProvider(VesselProvider):
         except (json.JSONDecodeError, TypeError):
             logger.debug("Ignoring non-JSON AIS frame.")
             return
+
+        self._messages_this_cycle += 1
 
         try:
             message_type = envelope["MessageType"]
