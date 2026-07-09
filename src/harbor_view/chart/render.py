@@ -339,11 +339,15 @@ VESSEL_TIER = {
 # loses weight, and route-line opacity/length fades, going down the
 # hierarchy.
 TIER_STYLE = {
-    1: dict(icon_scale=360, name_fs=6.4, detail_fs=5.2, route_alpha=0.34, route_len_mult=6.5, name_weight="bold"),
-    2: dict(icon_scale=300, name_fs=5.6, detail_fs=4.6, route_alpha=0.28, route_len_mult=5.5, name_weight="normal"),
-    3: dict(icon_scale=260, name_fs=5.2, detail_fs=4.4, route_alpha=0.22, route_len_mult=4.5, name_weight="normal"),
-    4: dict(icon_scale=210, name_fs=4.8, detail_fs=4.1, route_alpha=0.18, route_len_mult=3.5, name_weight="normal"),
-    5: dict(icon_scale=190, name_fs=4.5, detail_fs=3.9, route_alpha=0.14, route_len_mult=2.5, name_weight="normal"),
+    # name_fs / detail_fs are sized to feel like chart annotations rather
+    # than UI labels: name is the primary find, route is a quiet footnote.
+    # Ratio between the two widens at lower tiers so minor vessels recede
+    # more aggressively. icon_scale unchanged from Sprint 7.1.
+    1: dict(icon_scale=360, name_fs=5.5, detail_fs=3.9, name_weight="bold"),
+    2: dict(icon_scale=300, name_fs=4.8, detail_fs=3.5, name_weight="normal"),
+    3: dict(icon_scale=260, name_fs=4.4, detail_fs=3.3, name_weight="normal"),
+    4: dict(icon_scale=210, name_fs=4.0, detail_fs=3.0, name_weight="normal"),
+    5: dict(icon_scale=190, name_fs=3.7, detail_fs=2.8, name_weight="normal"),
 }
 
 
@@ -365,20 +369,18 @@ def draw_vessel(map_ax, vessel, label_side="right", label_dy=0.0):
                        lw=0.7, transform=transform, zorder=9)
     map_ax.add_patch(patch)
 
-    # Label: name set in its tier's weight/size. Softer anchoring than
-    # Sprint 2 -- a small fixed gap from the hull, with a hairline
-    # leader only drawn when the label has been nudged vertically away
-    # from the vessel (the inlet cluster), so the label feels loosely
-    # associated with the vessel rather than wired to it by a rigid
-    # offset rule in every case.
-    label_dx = scale * 0.95 if label_side == "right" else -scale * 0.95
+    # Label: name at top, route below. Gap from hull slightly wider than
+    # Sprint 2 so the symbol breathes independently of its annotation.
+    # Route set in italic at a noticeably smaller size \u2014 a chart footnote,
+    # not a second line of equal weight.
+    label_dx = scale * 1.10 if label_side == "right" else -scale * 1.10
     ha = "left" if label_side == "right" else "right"
     y_label = y + label_dy
 
     if abs(label_dy) > 1e-6:
         leader_x0 = x + (scale * 0.5 if label_side == "right" else -scale * 0.5)
         map_ax.plot([leader_x0, x + label_dx * 0.55], [y, y_label],
-                    color=COLOR_INK_SOFT, lw=0.4, alpha=0.45, zorder=9)
+                    color=COLOR_INK_SOFT, lw=0.35, alpha=0.30, zorder=9)
 
     map_ax.text(x + label_dx, y_label, vessel.name, fontsize=style["name_fs"],
                 color=COLOR_INK, family=FONT_BODY, ha=ha, va="bottom",
@@ -386,7 +388,7 @@ def draw_vessel(map_ax, vessel, label_side="right", label_dy=0.0):
     route_str = f"{vessel.origin}  \u2192  {vessel.destination}"
     map_ax.text(x + label_dx, y_label, route_str, fontsize=style["detail_fs"],
                 color=COLOR_METADATA, family=FONT_BODY, ha=ha, va="top",
-                zorder=10)
+                fontstyle="italic", alpha=0.65, zorder=10)
 
 
 # Per-vessel label placement, keyed by name, chosen against the fixed
@@ -395,14 +397,18 @@ def draw_vessel(map_ax, vessel, label_side="right", label_dy=0.0):
 # vertical nudge in meters for tight clusters (only the inlet trio of
 # tug/tug/pilot needs this -- everything else has comfortable room).
 LABEL_PLACEMENT = {
-    "GULF VOYAGER": ("right", 0),
-    "EVER GRANITE": ("right", 0),
-    "MISS CARLA": ("right", -60),
-    "EVERGLADES PILOT": ("right", 70),
-    "HARBOR KING": ("right", 0),
-    "OCEAN MAJESTY": ("right", 0),
-    "STAR ENDEAVOR": ("right", 0),
-    "ATLANTIC TRADER": ("right", 0),
+    # Inlet cluster: four vessels within ~2 km of each other (OCEAN MAJESTY,
+    # HARBOR KING, EVERGLADES PILOT, MISS CARLA). Vertical nudges spread the
+    # labels so names don't overlap. Values are metres in chart coordinates.
+    "OCEAN MAJESTY":    ("right",    0),
+    "HARBOR KING":      ("right",  180),
+    "EVERGLADES PILOT": ("right",   60),
+    "MISS CARLA":       ("right", -180),
+    # All other vessels have comfortable separation; no nudge needed.
+    "GULF VOYAGER":   ("right", 0),
+    "EVER GRANITE":   ("right", 0),
+    "STAR ENDEAVOR":  ("right", 0),
+    "ATLANTIC TRADER":("right", 0),
     "MAERSK HORIZON": ("right", 0),
     "CARIBBEAN STAR": ("right", 0),
 }
