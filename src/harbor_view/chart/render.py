@@ -23,6 +23,8 @@ import math
 import os
 from zoneinfo import ZoneInfo
 
+from harbor_view.config import DEFAULT_CONFIG, HarborConfig
+
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
@@ -69,10 +71,6 @@ COLOR_METADATA = "#7A776C"
 
 FONT_DISPLAY = "DejaVu Serif"
 FONT_BODY = "DejaVu Sans"
-
-# Harbor local timezone — respects EST/EDT automatically via IANA name.
-# Override with HARBOR_VIEW_TIMEZONE env var for a different deployment location.
-HARBOR_TIMEZONE = ZoneInfo(os.environ.get("HARBOR_VIEW_TIMEZONE", "America/New_York"))
 
 
 # ---------------------------------------------------------------------------
@@ -431,11 +429,8 @@ def draw_fleet(map_ax, vessels):
 # ---------------------------------------------------------------------------
 # Home marker
 # ---------------------------------------------------------------------------
-HOME_LAT, HOME_LON = 26.1300, -80.1010  # approx. Galt Ocean Mile stretch
-
-
-def draw_home_marker(map_ax, scene):
-    x, y = to_xy(HOME_LAT, HOME_LON)
+def draw_home_marker(map_ax, scene, config: HarborConfig):
+    x, y = to_xy(config.home_lat, config.home_lon)
     # Snap to the mid-line of the island at this latitude, so the
     # marker reliably sits on land regardless of small lat/lon tuning.
     ox, oy = scene["ocean_shore"]
@@ -475,7 +470,7 @@ def draw_home_marker(map_ax, scene):
 # ---------------------------------------------------------------------------
 # Sidebar
 # ---------------------------------------------------------------------------
-def draw_sidebar(sidebar_ax, now: _dt.datetime):
+def draw_sidebar(sidebar_ax, now: _dt.datetime, config: HarborConfig):
     """Sprint 2.5 (Priority 5): pushed further toward an antique chart
     margin than Sprint 2 -- hairline rules (0.8 -> 0.5), a slightly
     smaller/quieter time treatment, and a touch more breathing room
@@ -489,7 +484,7 @@ def draw_sidebar(sidebar_ax, now: _dt.datetime):
     ax.text(0.09, y, "Harbor View", fontsize=20, family=FONT_DISPLAY,
             color=COLOR_INK, ha="left", va="top")
     y -= 0.034
-    ax.text(0.09, y, "Port Everglades, Florida", fontsize=8.5,
+    ax.text(0.09, y, config.location_city, fontsize=8.5,
             family=FONT_BODY, color=COLOR_INK_SOFT, ha="left", va="top",
             style="italic")
     y -= 0.052
@@ -574,19 +569,26 @@ def draw_sidebar(sidebar_ax, now: _dt.datetime):
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
-def render(output_path: str = OUTPUT_PATH, vessel_provider: VesselProvider | None = None) -> str:
+def render(
+    output_path: str = OUTPUT_PATH,
+    vessel_provider: VesselProvider | None = None,
+    config: HarborConfig | None = None,
+) -> str:
     """Render Harbor View to a PNG.
 
     `vessel_provider` supplies the vessels to draw via its
     `get_vessels()` method -- the renderer calls that one method and
-    nothing else. Defaults to `PlaceholderProvider`, preserving the
-    exact behavior Harbor View has always had when run with no
-    arguments. Pass a different `VesselProvider` (e.g. a future
-    `AISProvider`, once implemented) to draw different vessels with no
-    other code changes.
+    nothing else. Defaults to `PlaceholderProvider`.
+
+    `config` controls location name, city, home-marker position, and
+    timezone. Defaults to `DEFAULT_CONFIG`, which reads from environment
+    variables with sensible fallback values. Pass an explicit
+    `HarborConfig` to render a different location without changing env.
     """
     if vessel_provider is None:
         vessel_provider = PlaceholderProvider()
+    if config is None:
+        config = DEFAULT_CONFIG
 
     fig, sidebar_ax, map_ax = build_layout()
 
@@ -598,9 +600,10 @@ def render(output_path: str = OUTPUT_PATH, vessel_provider: VesselProvider | Non
     draw_shipping_lanes(map_ax, x_min, x_max, y_min, y_max)
     draw_compass_rose(map_ax, x_min, x_max, y_min, y_max)
     draw_fleet(map_ax, vessel_provider.get_vessels())
-    draw_home_marker(map_ax, scene)
+    draw_home_marker(map_ax, scene, config)
 
-    draw_sidebar(sidebar_ax, _dt.datetime.now(tz=HARBOR_TIMEZONE))
+    now = _dt.datetime.now(tz=ZoneInfo(config.timezone))
+    draw_sidebar(sidebar_ax, now, config)
 
     out_dir = os.path.dirname(output_path)
     os.makedirs(out_dir, exist_ok=True)
