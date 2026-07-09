@@ -4,7 +4,7 @@ Sprint 7 experiment. Enabled via environment variable:
 
     HARBOR_VIEW_RENDER_MODE=hybrid
 
-Loads ``assets/harbor-view-reference-bw.PNG`` as the cartographic
+Loads ``assets/design/harbor-view-reference-bw.PNG`` as the cartographic
 background, then overlays live vessel data on top using the same coordinate
 system and vessel-drawing code as the procedural renderer.
 
@@ -49,7 +49,7 @@ _BG_PATH = os.path.abspath(
     os.path.join(
         os.path.dirname(__file__),   # .../src/harbor_view/chart/
         "..", "..", "..",            # -> repo root
-        "assets", "harbor-view-reference-bw.PNG",
+        "assets", "design", "harbor-view-reference-bw.PNG",
     )
 )
 
