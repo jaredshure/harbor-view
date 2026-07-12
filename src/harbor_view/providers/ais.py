@@ -271,7 +271,7 @@ class AISProvider(VesselProvider):
         # Persistent per-vessel state, keyed by MMSI.  Survives across
         # get_vessels() calls for the lifetime of this provider instance.
         self._cache: dict[str, _PartialVessel] = {}
-        self._messages_this_cycle: int = 0
+        self._messages_this_cycle: dict[str, int] = {}
 
     def get_vessels(self) -> list[Vessel]:
         if not self._api_key:
@@ -282,7 +282,7 @@ class AISProvider(VesselProvider):
             )
             return []
 
-        self._messages_this_cycle = 0
+        self._messages_this_cycle = {}
 
         # Snapshot which MMSIs already had position/static data so we can
         # report what each listen window actually added.
@@ -552,7 +552,15 @@ class AISProvider(VesselProvider):
 
         print(sep)
         print()
-        print(f"  Total AIS messages received this cycle : {self._messages_this_cycle}")
+        total_msgs = sum(self._messages_this_cycle.values())
+        pos_count = self._messages_this_cycle.get("PositionReport", 0)
+        static_count = self._messages_this_cycle.get("ShipStaticData", 0)
+        other_count = total_msgs - pos_count - static_count
+        print(f"  Messages this cycle (post-bbox)        : {total_msgs}")
+        print(f"    PositionReport                       : {pos_count}")
+        print(f"    ShipStaticData                       : {static_count}")
+        if other_count:
+            print(f"    other                                : {other_count}")
         print(f"  Unique vessels in cache (post-eviction): {len(self._cache)}")
         print(f"  Vessels inside viewport                : {n_in_vp_any}")
         print(f"  Vessels rendered                       : {n_rendered}")
@@ -617,8 +625,6 @@ class AISProvider(VesselProvider):
             logger.debug("Ignoring non-JSON AIS frame.")
             return
 
-        self._messages_this_cycle += 1
-
         try:
             message_type = envelope["MessageType"]
             metadata = envelope["MetaData"]
@@ -637,6 +643,13 @@ class AISProvider(VesselProvider):
             # guards against any vessel that straddles the edge of a
             # box or a future change to how the box is sent.
             return
+
+        # Count after all guards pass so the tally reflects messages that
+        # actually contributed data, keyed by type to distinguish
+        # PositionReport from ShipStaticData in the debug table.
+        self._messages_this_cycle[message_type] = (
+            self._messages_this_cycle.get(message_type, 0) + 1
+        )
 
         partial = partials.setdefault(mmsi, _PartialVessel(mmsi=mmsi))
         partial.latitude = lat
@@ -671,6 +684,7 @@ class AISProvider(VesselProvider):
                 partial.nav_status_code = int(nav_status)
 
         elif message_type == "ShipStaticData":
+            logger.debug("ShipStaticData payload MMSI=%s: %r", mmsi, payload)
             ais_type = payload.get("Type")
             if ais_type is not None:
                 partial.ais_type_code = int(ais_type)
