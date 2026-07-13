@@ -241,7 +241,12 @@ def test_missing_required_keys_are_ignored_not_raised():
     assert partials == {}
 
 
-def test_message_outside_bounding_box_is_ignored():
+def test_position_report_outside_bbox_is_rejected():
+    """A PositionReport with coordinates outside the subscribed bounding
+    box must not update the cache.  The lat/lon in PositionReport
+    metadata is the vessel's actual current position; bbox filtering is
+    appropriate and must remain in force.
+    """
     provider = AISProvider(api_key="x", bounding_box=((25.85, -80.30), (26.45, -79.85)))
     far_away = json.dumps({
         "MessageType": "PositionReport",
@@ -251,6 +256,104 @@ def test_message_outside_bounding_box_is_ignored():
     partials = {}
     provider._handle_message(far_away, partials)
     assert partials == {}
+
+
+def test_static_data_outside_bbox_is_accepted():
+    """A ShipStaticData with AISStream metadata coordinates outside the
+    bbox must still be accepted.  AIS type 5 carries no position;
+    AISStream synthesizes MetaData.latitude/longitude from their MMSI
+    database, which may be stale or point to a different port.  Applying
+    the bbox guard to this synthetic value was silently dropping identity
+    data for vessels physically inside the viewport.
+
+    Acceptance means the type code and name are written into the cache.
+    The synthetic coordinates from ShipStaticData metadata must NOT be
+    written to the cache's lat/lon fields (those only come from a
+    bbox-validated PositionReport).
+    """
+    provider = _provider()
+    partials = {}
+    static_outside = json.dumps({
+        "MessageType": "ShipStaticData",
+        "MetaData": {
+            "MMSI": 367719770, "ShipName": "TEST VESSEL",
+            "latitude": 51.4, "longitude": 4.1,  # Netherlands — far outside box
+        },
+        "Message": {
+            "ShipStaticData": {"Name": "TEST VESSEL", "Type": 70, "Destination": "PORT EVG"},
+        },
+    })
+    provider._handle_message(static_outside, partials)
+    assert "367719770" in partials
+    p = partials["367719770"]
+    assert p.ais_type_code == 70
+    assert p.name == "TEST VESSEL"
+    assert p.latitude is None   # synthetic coord must not populate position
+    assert p.longitude is None
+
+
+def test_static_data_with_no_lat_lon_is_accepted():
+    """A ShipStaticData with no latitude/longitude in MetaData must still
+    update the cache.  AIS type 5 carries no position at all, so the
+    absence of coordinates in AISStream's metadata is expected and must
+    not cause the message to be silently dropped.
+    """
+    provider = _provider()
+    partials = {}
+    static_no_coords = json.dumps({
+        "MessageType": "ShipStaticData",
+        "MetaData": {"MMSI": 367719770},
+        "Message": {
+            "ShipStaticData": {"Name": "TEST VESSEL", "Type": 52, "Destination": ""},
+        },
+    })
+    provider._handle_message(static_no_coords, partials)
+    assert "367719770" in partials
+    p = partials["367719770"]
+    assert p.ais_type_code == 52
+    assert p.name == "TEST VESSEL"
+    assert p.latitude is None
+    assert p.longitude is None
+
+
+def test_static_data_joins_to_existing_position_record_by_mmsi():
+    """Static data arriving with out-of-bbox (or absent) coordinates
+    must merge into the existing cache entry for the same MMSI, leaving
+    the position from the earlier PositionReport intact.
+
+    Canonical scenario: a harbor tug broadcasts PositionReport (inside
+    bbox, position accepted) then ShipStaticData (AISStream metadata
+    outside bbox due to stale database position, previously dropped, now
+    accepted).  After both messages the vessel must be drawable.
+    """
+    provider = _provider()
+    partials = {}
+
+    provider._handle_message(_POSITION_REPORT, partials)
+    assert partials["367719770"].latitude == 26.10
+    assert partials["367719770"].ais_type_code is None  # type not yet known
+
+    static_outside = json.dumps({
+        "MessageType": "ShipStaticData",
+        "MetaData": {
+            "MMSI": 367719770, "ShipName": "TEST VESSEL",
+            "latitude": 51.4, "longitude": 4.1,
+        },
+        "Message": {
+            "ShipStaticData": {"Name": "TEST VESSEL", "Type": 70, "Destination": "NASSAU"},
+        },
+    })
+    provider._handle_message(static_outside, partials)
+
+    p = partials["367719770"]
+    assert p.ais_type_code == 70       # identity from ShipStaticData
+    assert p.latitude == 26.10         # position preserved from PositionReport
+    assert p.longitude == -80.09
+    assert p.is_drawable() is True
+    vessel = p.to_vessel()
+    assert vessel.vessel_type is VesselType.CARGO
+    assert vessel.latitude == 26.10
+    assert vessel.destination == "NASSAU"
 
 
 def test_unavailable_heading_falls_back_to_cog():
