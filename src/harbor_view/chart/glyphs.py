@@ -66,7 +66,7 @@ def unknown_vessel_path() -> Path:
     NOAA hull silhouettes so unknown targets read immediately as
     unclassified rather than being confused with a specific vessel kind.
     """
-    r_y, r_x = 0.24, 0.15
+    r_y, r_x = 0.50, 0.32
     verts = [
         (0,    r_y),
         (r_x,  0  ),

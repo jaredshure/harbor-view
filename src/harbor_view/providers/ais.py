@@ -564,22 +564,37 @@ class AISProvider(VesselProvider):
 
             rendered = False
             reason = ""
-            if not has_pos:
-                reason = "missing position"
-                n_filtered += 1
-            elif not has_name:
-                reason = "missing name"
-                n_filtered += 1
-            elif hv_type is None:
-                reason = f"unsupported type ({p.ais_type_code})"
-                n_filtered += 1
-            elif not in_vp:
-                dirs, dist_m = _outside_info(x, y)
-                reason = f"outside viewport [{dirs}, {dist_m:.0f} m]"
-                n_outside_vp += 1
+            if self._filter_mode == "development":
+                # Dev mode mirrors is_drawable_dev(): position is the only
+                # requirement; missing name and unmapped type are not
+                # disqualifying (MMSI fallback name, UNKNOWN glyph).
+                if not has_pos:
+                    reason = "missing position"
+                    n_filtered += 1
+                elif not in_vp:
+                    dirs, dist_m = _outside_info(x, y)
+                    reason = f"outside viewport [{dirs}, {dist_m:.0f} m]"
+                    n_outside_vp += 1
+                else:
+                    rendered = True
+                    n_rendered += 1
             else:
-                rendered = True
-                n_rendered += 1
+                if not has_pos:
+                    reason = "missing position"
+                    n_filtered += 1
+                elif not has_name:
+                    reason = "missing name"
+                    n_filtered += 1
+                elif hv_type is None:
+                    reason = f"unsupported type ({p.ais_type_code})"
+                    n_filtered += 1
+                elif not in_vp:
+                    dirs, dist_m = _outside_info(x, y)
+                    reason = f"outside viewport [{dirs}, {dist_m:.0f} m]"
+                    n_outside_vp += 1
+                else:
+                    rendered = True
+                    n_rendered += 1
 
             ais_str = str(p.ais_type_code) if p.ais_type_code is not None else "—"
             hv_str = hv_type.value.upper() if hv_type else "none"
