@@ -15,8 +15,17 @@ def test_tug_codes():
 
 
 def test_passenger_range_maps_to_cruise():
-    for code in (60, 65, 69):
+    # Code 60 ("Passenger, unspecified") is excluded from the range; start at 61.
+    for code in (61, 65, 69):
         assert vessel_type_for_ais_code(code) is VesselType.CRUISE
+
+
+def test_ais_type_60_is_not_cruise():
+    """AIS type 60 ("Passenger, unspecified") must not map to CRUISE.
+    Harbor ferries and water taxis use code 60 as often as large passenger
+    vessels, making it too broad to honestly assign the cruise-ship glyph.
+    """
+    assert vessel_type_for_ais_code(60) is None
 
 
 def test_cargo_range():
@@ -45,7 +54,8 @@ def test_boundary_codes():
     spot-checking the middle of each range.
     """
     assert vessel_type_for_ais_code(59) is None
-    assert vessel_type_for_ais_code(60) is VesselType.CRUISE
+    assert vessel_type_for_ais_code(60) is None   # excluded: too broad for cruise glyph
+    assert vessel_type_for_ais_code(61) is VesselType.CRUISE
     assert vessel_type_for_ais_code(69) is VesselType.CRUISE
     assert vessel_type_for_ais_code(70) is VesselType.CARGO
     assert vessel_type_for_ais_code(79) is VesselType.CARGO

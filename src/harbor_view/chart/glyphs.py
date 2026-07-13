@@ -57,12 +57,34 @@ def pilot_boat_path() -> Path:
     return _noaa_hull(length=0.40, beam=0.14, bow_len=0.18)
 
 
+def unknown_vessel_path() -> Path:
+    """Diamond placeholder for unidentified AIS targets.
+
+    Used only in development mode (HARBOR_VIEW_FILTER_MODE=development)
+    for vessels whose AIS type code has no Harbor View mapping. The
+    vertically-elongated diamond shape is deliberately unlike any of the
+    NOAA hull silhouettes so unknown targets read immediately as
+    unclassified rather than being confused with a specific vessel kind.
+    """
+    r_y, r_x = 0.24, 0.15
+    verts = [
+        (0,    r_y),
+        (r_x,  0  ),
+        (0,   -r_y),
+        (-r_x, 0  ),
+        (0,    r_y),
+    ]
+    codes = [Path.MOVETO, Path.LINETO, Path.LINETO, Path.LINETO, Path.CLOSEPOLY]
+    return Path(verts, codes)
+
+
 GLYPH_BY_KIND = {
     "cruise": cruise_ship_path,
     "cargo": cargo_ship_path,
     "tanker": tanker_path,
     "tug": tug_path,
     "pilot": pilot_boat_path,
+    "unknown": unknown_vessel_path,
 }
 
 

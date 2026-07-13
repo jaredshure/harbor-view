@@ -36,6 +36,7 @@ class VesselType(str, Enum):
     TANKER = "tanker"
     TUG = "tug"
     PILOT = "pilot"
+    UNKNOWN = "unknown"  # development mode only: AIS target with no mapped type
 
 
 class VesselStatus(str, Enum):

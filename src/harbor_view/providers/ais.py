@@ -52,7 +52,7 @@ from dataclasses import dataclass, field
 
 from harbor_view.providers.ais_types import vessel_type_for_ais_code
 from harbor_view.providers.base import VesselProvider
-from harbor_view.providers.models import Vessel, VesselStatus
+from harbor_view.providers.models import Vessel, VesselStatus, VesselType
 
 logger = logging.getLogger("harbor_view.providers.ais")
 
@@ -158,6 +158,38 @@ class _PartialVessel:
             return False
         return vessel_type_for_ais_code(self.ais_type_code) is not None
 
+    def is_drawable_dev(self) -> bool:
+        """Development-mode drawability: any vessel with a valid position
+        is renderable.  AIS type and name are not required -- unmapped
+        types use the UNKNOWN glyph and the MMSI is used as a fallback name.
+        """
+        return self.latitude is not None and self.longitude is not None
+
+    def to_vessel_dev(self) -> Vessel:
+        """Convert to Vessel for development-mode rendering.
+
+        Unknown/missing/unmapped AIS types become VesselType.UNKNOWN so they
+        render with the generic diamond glyph rather than being silently
+        dropped.  Falls back to the MMSI string as the vessel name when no
+        ShipStaticData name has been received.
+        """
+        vessel_type = vessel_type_for_ais_code(self.ais_type_code) or VesselType.UNKNOWN
+        status = _nav_status_to_vessel_status(self.nav_status_code)
+        destination = (self.destination or "").strip().rstrip("@").strip()
+        name = (self.name or "").strip() or self.mmsi
+        return Vessel(
+            name=name,
+            vessel_type=vessel_type,
+            latitude=self.latitude,
+            longitude=self.longitude,
+            heading_deg=self.heading_deg if self.heading_deg is not None else 0.0,
+            origin="",
+            destination=destination,
+            mmsi=self.mmsi,
+            speed_kn=self.speed_kn,
+            status=status,
+        )
+
     def to_vessel(self) -> Vessel:
         vessel_type = vessel_type_for_ais_code(self.ais_type_code)
         assert vessel_type is not None  # guaranteed by is_drawable()
@@ -237,6 +269,7 @@ class AISProvider(VesselProvider):
         bounding_box: tuple[tuple[float, float], tuple[float, float]] | None = None,
         listen_seconds: float | None = None,
         stale_seconds: float | None = None,
+        filter_mode: str | None = None,
     ) -> None:
         # Explicit constructor args are supported for tests and for
         # callers that already have configuration in hand; the normal
@@ -272,6 +305,12 @@ class AISProvider(VesselProvider):
         # get_vessels() calls for the lifetime of this provider instance.
         self._cache: dict[str, _PartialVessel] = {}
         self._messages_this_cycle: dict[str, int] = {}
+        # "development" renders all positioned vessels; None/anything else
+        # is the default restrictive production filter.
+        self._filter_mode: str | None = (
+            filter_mode if filter_mode is not None
+            else (os.environ.get("HARBOR_VIEW_FILTER_MODE") or None)
+        )
 
     def get_vessels(self) -> list[Vessel]:
         if not self._api_key:
@@ -323,7 +362,11 @@ class AISProvider(VesselProvider):
         has_both = has_position & has_static
         new_positions = has_position - pre_position
         new_static = has_static - pre_static
-        vessels = [p.to_vessel() for p in self._cache.values() if p.is_drawable()]
+        if self._filter_mode == "development":
+            vessels = [p.to_vessel_dev() for p in self._cache.values()
+                       if p.is_drawable_dev()]
+        else:
+            vessels = [p.to_vessel() for p in self._cache.values() if p.is_drawable()]
         logger.info(
             "AISProvider cache: total=%d  position=%d  static=%d  both=%d  "
             "drawable=%d  new_position=%d  new_static=%d  evicted=%d",
