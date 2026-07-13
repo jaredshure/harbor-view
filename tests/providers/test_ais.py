@@ -679,6 +679,81 @@ def test_dev_mode_known_type_uses_correct_symbol(monkeypatch):
     assert vessels[0].vessel_type is VesselType.CARGO  # not UNKNOWN
 
 
+# ---------------------------------------------------------------------------
+# Debug table mode-awareness
+# ---------------------------------------------------------------------------
+
+def _make_in_viewport_partial(mmsi: str, ais_type_code: int | None = 30):
+    """Return a _PartialVessel placed inside the chart viewport.
+
+    lat=26.1, lon=-80.1 projects to roughly (948 m, 856 m) in the
+    equirectangular chart space, well inside the 14.4 NM tall / ~7.7 NM
+    wide viewport centered on REF_LAT=26.0906, REF_LON=-80.1095.
+    """
+    p = _PartialVessel(mmsi=mmsi)
+    p.latitude = 26.1
+    p.longitude = -80.1
+    p.name = "FISHY"
+    p.ais_type_code = ais_type_code
+    return p
+
+
+def test_debug_table_dev_mode_unmapped_vessel_is_rendered(capsys):
+    """In development mode, an unmapped vessel (type 30, fishing) with a
+    valid in-viewport position must show Rndr=YES and be counted in
+    'Vessels rendered', not 'Vessels filtered'.
+    """
+    provider = _dev_provider()
+    provider._cache["111000001"] = _make_in_viewport_partial("111000001", ais_type_code=30)
+    provider._print_debug_table()
+    out = capsys.readouterr().out
+
+    assert "YES " in out                                        # row-level Rndr column
+    assert "Vessels rendered                       : 1" in out
+    assert "Vessels filtered (missing data/type)   : 0" in out
+
+
+def test_debug_table_production_mode_unmapped_vessel_is_filtered(capsys):
+    """In production mode, the same unmapped vessel must show Rndr=NO
+    and be counted in 'Vessels filtered', not 'Vessels rendered'.
+    """
+    provider = _provider()
+    provider._cache["111000001"] = _make_in_viewport_partial("111000001", ais_type_code=30)
+    provider._print_debug_table()
+    out = capsys.readouterr().out
+
+    assert "NO  " in out                                        # row-level Rndr column
+    assert "Vessels rendered                       : 0" in out
+    assert "Vessels filtered (missing data/type)   : 1" in out
+
+
+def test_debug_table_counts_reflect_mode(capsys):
+    """With one in-viewport vessel of unmapped type and one of known type
+    (cargo), dev mode must count both as rendered while production mode
+    counts only the cargo vessel as rendered and the fishing vessel as
+    filtered.
+    """
+    fishing = _make_in_viewport_partial("111000001", ais_type_code=30)
+    cargo = _make_in_viewport_partial("111000002", ais_type_code=70)
+    cargo.name = "FREIGHTER"
+
+    dev = _dev_provider()
+    dev._cache["111000001"] = fishing
+    dev._cache["111000002"] = cargo
+    dev._print_debug_table()
+    dev_out = capsys.readouterr().out
+    assert "Vessels rendered                       : 2" in dev_out
+    assert "Vessels filtered (missing data/type)   : 0" in dev_out
+
+    prod = _provider()
+    prod._cache["111000001"] = fishing
+    prod._cache["111000002"] = cargo
+    prod._print_debug_table()
+    prod_out = capsys.readouterr().out
+    assert "Vessels rendered                       : 1" in prod_out
+    assert "Vessels filtered (missing data/type)   : 1" in prod_out
+
+
 def test_unmapped_vessel_type_never_enters_drawable_pool(monkeypatch):
     """Fishing/pleasure/sailing vessels (no Harbor View glyph) must
     never appear in get_vessels() output even after accumulating a
