@@ -31,6 +31,19 @@ def test_ais_provider_is_a_vessel_provider():
     assert isinstance(AISProvider(api_key="x"), VesselProvider)
 
 
+def test_invalid_filter_mode_falls_back_to_production(monkeypatch, caplog):
+    """An unrecognized HARBOR_VIEW_FILTER_MODE value must log a warning
+    and fall back to production mode rather than silently misbehaving.
+    """
+    import logging
+    monkeypatch.setenv("HARBOR_VIEW_FILTER_MODE", "foobar")
+    with caplog.at_level(logging.WARNING, logger="harbor_view.providers.ais"):
+        provider = AISProvider(api_key="x")
+    assert provider._filter_mode is None
+    assert "foobar" in caplog.text
+    assert "falling back to production mode" in caplog.text
+
+
 def test_no_api_key_returns_empty_list_without_connecting(monkeypatch):
     monkeypatch.delenv("AISSTREAM_API_KEY", raising=False)
     provider = AISProvider()  # no explicit key, none in the environment
@@ -565,6 +578,105 @@ def test_drawable_when_heading_and_cog_both_unavailable():
     vessel = partial.to_vessel()
     assert vessel.heading_deg == 0.0             # default orientation: due north
     assert vessel.vessel_type is VesselType.CARGO
+
+
+# ---------------------------------------------------------------------------
+# Development filter mode (HARBOR_VIEW_FILTER_MODE=development)
+# ---------------------------------------------------------------------------
+
+def _dev_provider():
+    return AISProvider(
+        api_key="x",
+        bounding_box=((25.85, -80.30), (26.45, -79.85)),
+        filter_mode="development",
+    )
+
+
+def test_dev_mode_unknown_ais_type_is_rendered(monkeypatch):
+    """In development mode, a vessel with an AIS type that has no Harbor
+    View mapping (e.g. type 30, fishing) must appear in get_vessels()
+    output as VesselType.UNKNOWN rather than being dropped.
+    """
+    provider = _dev_provider()
+    fishing_pos = json.dumps({
+        "MessageType": "PositionReport",
+        "MetaData": {"MMSI": 111222333, "ShipName": "FISHY", "latitude": 26.1, "longitude": -80.1},
+        "Message": {"PositionReport": {"TrueHeading": 90, "Cog": 90, "Sog": 4.0, "NavigationalStatus": 0}},
+    })
+    fishing_static = json.dumps({
+        "MessageType": "ShipStaticData",
+        "MetaData": {"MMSI": 111222333, "ShipName": "FISHY", "latitude": 26.1, "longitude": -80.1},
+        "Message": {"ShipStaticData": {"Name": "FISHY", "Type": 30, "Destination": ""}},
+    })
+
+    async def window(cache):
+        provider._handle_message(fishing_pos, cache)
+        provider._handle_message(fishing_static, cache)
+
+    monkeypatch.setattr(provider, "_collect", window)
+    vessels = provider.get_vessels()
+    assert len(vessels) == 1
+    assert vessels[0].vessel_type is VesselType.UNKNOWN
+    assert vessels[0].name == "FISHY"
+
+
+def test_dev_mode_missing_ais_type_is_rendered(monkeypatch):
+    """In development mode, a vessel that has only a PositionReport
+    (no ShipStaticData, ais_type_code=None) must still appear in
+    get_vessels() output as VesselType.UNKNOWN.
+    """
+    provider = _dev_provider()
+
+    async def window(cache):
+        provider._handle_message(_POSITION_REPORT, cache)  # no ShipStaticData
+
+    monkeypatch.setattr(provider, "_collect", window)
+    vessels = provider.get_vessels()
+    assert len(vessels) == 1
+    assert vessels[0].vessel_type is VesselType.UNKNOWN
+
+
+def test_production_mode_unknown_ais_type_is_filtered(monkeypatch):
+    """In production mode (the default), a vessel with no mapped AIS type
+    must be absent from get_vessels() even in development mode is NOT active.
+    Contrasts directly with test_dev_mode_unknown_ais_type_is_rendered.
+    """
+    provider = _provider()  # production mode; no filter_mode argument
+    fishing_pos = json.dumps({
+        "MessageType": "PositionReport",
+        "MetaData": {"MMSI": 111222333, "ShipName": "FISHY", "latitude": 26.1, "longitude": -80.1},
+        "Message": {"PositionReport": {"TrueHeading": 90, "Cog": 90, "Sog": 4.0, "NavigationalStatus": 0}},
+    })
+    fishing_static = json.dumps({
+        "MessageType": "ShipStaticData",
+        "MetaData": {"MMSI": 111222333, "ShipName": "FISHY", "latitude": 26.1, "longitude": -80.1},
+        "Message": {"ShipStaticData": {"Name": "FISHY", "Type": 30, "Destination": ""}},
+    })
+
+    async def window(cache):
+        provider._handle_message(fishing_pos, cache)
+        provider._handle_message(fishing_static, cache)
+
+    monkeypatch.setattr(provider, "_collect", window)
+    vessels = provider.get_vessels()
+    assert vessels == []
+
+
+def test_dev_mode_known_type_uses_correct_symbol(monkeypatch):
+    """In development mode, a vessel with a recognized AIS type must
+    still use that type's symbol -- VesselType.UNKNOWN must not
+    override a vessel that has a valid mapping.
+    """
+    provider = _dev_provider()
+
+    async def window(cache):
+        provider._handle_message(_POSITION_REPORT, cache)
+        provider._handle_message(_SHIP_STATIC_DATA, cache)  # Type=70 -> CARGO
+
+    monkeypatch.setattr(provider, "_collect", window)
+    vessels = provider.get_vessels()
+    assert len(vessels) == 1
+    assert vessels[0].vessel_type is VesselType.CARGO  # not UNKNOWN
 
 
 def test_unmapped_vessel_type_never_enters_drawable_pool(monkeypatch):

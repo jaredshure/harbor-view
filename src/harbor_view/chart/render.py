@@ -332,6 +332,7 @@ VESSEL_TIER = {
     "tanker": 3,
     "pilot": 4,
     "tug": 5,
+    "unknown": 5,  # development mode: unidentified target, same visual weight as tug
 }
 
 # Per-tier visual parameters. Icon scale shrinks, label shrinks and

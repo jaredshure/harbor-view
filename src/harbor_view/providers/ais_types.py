@@ -34,11 +34,13 @@ _EXACT_CODE_TO_TYPE: dict[int, VesselType] = {
 
 # Range matches, checked if no exact match applies.
 _RANGE_TO_TYPE: list[tuple[range, VesselType]] = [
-    (range(60, 70), VesselType.CRUISE),  # Passenger -- Harbor View's
-                                          # only passenger-vessel glyph
-                                          # is "cruise"; smaller ferries
-                                          # and ropax also land here for
-                                          # lack of a closer category.
+    (range(61, 70), VesselType.CRUISE),  # Passenger sub-categories 61-69.
+                                          # Code 60 ("Passenger, unspecified")
+                                          # is excluded: it is too broad to
+                                          # map honestly to a cruise-ship
+                                          # glyph -- harbor ferries and water
+                                          # taxis use it as often as large
+                                          # passenger vessels.
     (range(70, 80), VesselType.CARGO),   # Cargo, all sub-categories
     (range(80, 90), VesselType.TANKER),  # Tanker, all sub-categories
 ]
