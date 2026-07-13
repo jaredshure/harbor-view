@@ -307,10 +307,16 @@ class AISProvider(VesselProvider):
         self._messages_this_cycle: dict[str, int] = {}
         # "development" renders all positioned vessels; None/anything else
         # is the default restrictive production filter.
-        self._filter_mode: str | None = (
-            filter_mode if filter_mode is not None
-            else (os.environ.get("HARBOR_VIEW_FILTER_MODE") or None)
-        )
+        _raw_mode = filter_mode if filter_mode is not None else os.environ.get("HARBOR_VIEW_FILTER_MODE")
+        if _raw_mode and _raw_mode != "development":
+            logger.warning(
+                "HARBOR_VIEW_FILTER_MODE=%r is not a recognized value "
+                "(the only supported value is \"development\"); "
+                "falling back to production mode.",
+                _raw_mode,
+            )
+            _raw_mode = None
+        self._filter_mode: str | None = _raw_mode or None
 
     def get_vessels(self) -> list[Vessel]:
         if not self._api_key:
@@ -524,7 +530,9 @@ class AISProvider(VesselProvider):
         )
         sep = "-" * len(header)
 
+        mode_label = "DEVELOPMENT" if self._filter_mode == "development" else "PRODUCTION"
         print()
+        print(f"Filter mode: {mode_label}")
         print("=" * len(header))
         print("HARBOR VIEW — AIS DEBUG RECONCILIATION TABLE")
         print("=" * len(header))

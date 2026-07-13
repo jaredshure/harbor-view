@@ -31,6 +31,19 @@ def test_ais_provider_is_a_vessel_provider():
     assert isinstance(AISProvider(api_key="x"), VesselProvider)
 
 
+def test_invalid_filter_mode_falls_back_to_production(monkeypatch, caplog):
+    """An unrecognized HARBOR_VIEW_FILTER_MODE value must log a warning
+    and fall back to production mode rather than silently misbehaving.
+    """
+    import logging
+    monkeypatch.setenv("HARBOR_VIEW_FILTER_MODE", "foobar")
+    with caplog.at_level(logging.WARNING, logger="harbor_view.providers.ais"):
+        provider = AISProvider(api_key="x")
+    assert provider._filter_mode is None
+    assert "foobar" in caplog.text
+    assert "falling back to production mode" in caplog.text
+
+
 def test_no_api_key_returns_empty_list_without_connecting(monkeypatch):
     monkeypatch.delenv("AISSTREAM_API_KEY", raising=False)
     provider = AISProvider()  # no explicit key, none in the environment
