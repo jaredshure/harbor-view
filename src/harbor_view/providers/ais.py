@@ -633,38 +633,50 @@ class AISProvider(VesselProvider):
             logger.debug("Ignoring AIS frame missing MessageType/MetaData/MMSI.")
             return
 
-        lat = metadata.get("latitude")
-        lon = metadata.get("longitude")
-        if lat is None or lon is None:
-            return
-        if not _in_bounding_box(lat, lon, self._bbox):
-            # AISStream's bounding-box filter is applied server-side,
-            # but a redundant client-side check costs nothing and
-            # guards against any vessel that straddles the edge of a
-            # box or a future change to how the box is sent.
-            return
+        # PositionReport (AIS types 1-3): MetaData.latitude/longitude is the
+        # vessel's actual current position from the AIS message. Require valid
+        # coordinates and apply the bounding-box guard.
+        #
+        # ShipStaticData (AIS type 5): AIS type 5 carries no position at all.
+        # AISStream synthesizes MetaData.latitude/longitude from their MMSI
+        # database (last-known position), which may be stale or geocoded to a
+        # different port. Applying the bbox guard to this synthetic position
+        # silently drops static data for vessels physically inside the viewport
+        # whose database entry points elsewhere -- the failure mode observed for
+        # active harbor service vessels (tugs, pilot boats). Skip both guards for
+        # ShipStaticData; static fields are folded into the cache by MMSI and
+        # only surface when a bbox-validated PositionReport also exists for the
+        # vessel.
+        if message_type == "PositionReport":
+            lat = metadata.get("latitude")
+            lon = metadata.get("longitude")
+            if lat is None or lon is None:
+                return
+            if not _in_bounding_box(lat, lon, self._bbox):
+                # AISStream applies this filter server-side; the client-side
+                # check guards against edge cases and future subscription changes.
+                return
 
-        # Count after all guards pass so the tally reflects messages that
-        # actually contributed data, keyed by type to distinguish
-        # PositionReport from ShipStaticData in the debug table.
+        # Count after all per-type guards pass.
         self._messages_this_cycle[message_type] = (
             self._messages_this_cycle.get(message_type, 0) + 1
         )
 
         partial = partials.setdefault(mmsi, _PartialVessel(mmsi=mmsi))
-        partial.latitude = lat
-        partial.longitude = lon
         partial.last_seen_unix = time.time()
-
-        ship_name = metadata.get("ShipName")
-        if ship_name and ship_name.strip():
-            partial.name = ship_name
 
         payload = envelope.get("Message", {}).get(message_type)
         if not isinstance(payload, dict):
             return
 
         if message_type == "PositionReport":
+            partial.latitude = lat
+            partial.longitude = lon
+
+            ship_name = metadata.get("ShipName")
+            if ship_name and ship_name.strip():
+                partial.name = ship_name
+
             heading = payload.get("TrueHeading")
             # AIS reports 511 for "heading not available." Cog
             # (course over ground) is used as a fallback so a vessel
