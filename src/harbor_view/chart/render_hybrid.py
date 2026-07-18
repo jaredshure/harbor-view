@@ -32,7 +32,6 @@ from harbor_view.chart.render import (
     COAST_FRAC_FROM_LEFT,
     MARGIN_FRAC,
     SIDEBAR_FRAC,
-    VIEW_HALF_HEIGHT_NM,
     compute_view_window,
     draw_fleet,
 )
@@ -152,14 +151,17 @@ def _draw_calibration_debug(
     Normal output is never affected.
 
     Draws:
-      - Dashed panel centreLines (red) at the viewport midpoint
-      - Origin crosshair (red) at (0, 0) — the REF point / Port Everglades inlet
-      - Coastline target line (blue) at x = 0, which is where COAST_FRAC_FROM_LEFT
-        places the ocean shoreline in the overlay coordinate system
+      - Dashed panel centrelines (red) at the viewport midpoint
+      - Primary landmark crosshair (red) at (0, 0) — The Palms, the reference
+        location and local coordinate origin
+      - Port Everglades secondary landmark (blue) at its position in local
+        coords from The Palms (~865 m west, ~7 229 m south), if within viewport
       - Calibrated extent boundary (dark grey dashes) showing the four edges of
         the artwork's calibrated geographic coverage
       - Viewport bounds label (grey) for screenshot comparison
     """
+    from harbor_view.chart.geometry import to_xy
+
     x_span = x_max - x_min
     y_span = y_max - y_min
     x_center = (x_min + x_max) / 2
@@ -180,26 +182,39 @@ def _draw_calibration_debug(
         color=red, fontsize=5.0, ha="left", va="top", zorder=Z + 1, alpha=0.85,
     )
 
-    # --- Origin / inlet crosshair -------------------------------------------
+    # --- Primary landmark: The Palms (origin) --------------------------------
+    # The Palms is the reference location and local coordinate origin (0, 0).
     ax.plot([-cr, cr], [0.0, 0.0], color=red, lw=1.2, zorder=Z + 1, alpha=0.90)
     ax.plot([0.0, 0.0], [-cr, cr], color=red, lw=1.2, zorder=Z + 1, alpha=0.90)
     ax.scatter([0.0], [0.0], color=red, s=12, zorder=Z + 2, alpha=0.95)
     ax.text(
         cr * 1.3, cr * 0.4,
-        "origin (inlet)\n(x=0, y=0)",
+        "The Palms\n(origin, x=0, y=0)",
         color=red, fontsize=4.8, ha="left", va="bottom", zorder=Z + 1, alpha=0.85,
     )
 
-    # --- Target coastline X -------------------------------------------------
-    # x = 0 is where the ocean shoreline sits at the inlet latitude, per
-    # COAST_FRAC_FROM_LEFT positioning in compute_view_window.
-    ax.axvline(0.0, color=blue, ls=":", lw=1.2, alpha=0.80, zorder=Z)
-    ax.text(
-        x_span * 0.004, y_min + y_span * 0.02,
-        f"coast target  x=0\n({COAST_FRAC_FROM_LEFT:.0%} from left)",
-        color=blue, fontsize=4.5, ha="left", va="bottom",
-        zorder=Z + 1, alpha=0.85, rotation=90,
-    )
+    # --- Secondary landmark: Port Everglades inlet ---------------------------
+    # The old reference point, kept as a geographic landmark.
+    # Position derived from the actual coordinates via to_xy() using the
+    # current REF_LAT/REF_LON (The Palms), so it stays correct if the
+    # reference location is reconfigured via env vars.
+    PORT_EVERGLADES_LAT = 26.0906
+    PORT_EVERGLADES_LON = -80.1095
+    x_pe, y_pe = to_xy(PORT_EVERGLADES_LAT, PORT_EVERGLADES_LON)
+
+    if x_min <= x_pe <= x_max and y_min <= y_pe <= y_max:
+        cr_pe = cr * 0.65
+        ax.plot([x_pe - cr_pe, x_pe + cr_pe], [y_pe, y_pe],
+                color=blue, lw=1.0, zorder=Z + 1, alpha=0.85)
+        ax.plot([x_pe, x_pe], [y_pe - cr_pe, y_pe + cr_pe],
+                color=blue, lw=1.0, zorder=Z + 1, alpha=0.85)
+        ax.scatter([x_pe], [y_pe], color=blue, s=8, zorder=Z + 2, alpha=0.90)
+        ax.text(
+            x_pe + cr_pe * 1.3, y_pe,
+            f"Port Everglades\ninlet  ({x_pe/1852:.1f},{y_pe/1852:.1f}) NM",
+            color=blue, fontsize=4.5, ha="left", va="center",
+            zorder=Z + 1, alpha=0.80,
+        )
 
     # --- Calibrated extent boundary -----------------------------------------
     cal = _calibrated_map_extent(
@@ -222,12 +237,13 @@ def _draw_calibration_debug(
     )
 
     # --- Viewport info label ------------------------------------------------
-    NM = 1852.0
+    _NM = 1852.0
     ax.text(
         x_max - x_span * 0.01, y_max - y_span * 0.01,
         (
-            f"x [{x_min/NM:.2f}, {x_max/NM:.2f}] NM\n"
-            f"y [{y_min/NM:.2f}, {y_max/NM:.2f}] NM"
+            f"offshore  {x_max/_NM:.1f} NM\n"
+            f"x [{x_min/_NM:.2f}, {x_max/_NM:.2f}] NM\n"
+            f"y [{y_min/_NM:.2f}, {y_max/_NM:.2f}] NM"
         ),
         color=grey, fontsize=4.5, ha="right", va="top", zorder=Z + 1, alpha=0.65,
     )
