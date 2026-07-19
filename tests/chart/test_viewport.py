@@ -1,14 +1,17 @@
 """Tests for the viewport geometry solver.
 
-All tests in this file are pure-math: they call solve_viewport() with
-explicit arguments and assert on the return values.  No matplotlib, no
-images, no filesystem — the solver has no dependencies beyond Python.
+All tests in this file are pure-math: they call solve_viewport() and
+to_local_frame() with explicit arguments and assert on the return values.
+No matplotlib, no images, no filesystem — neither function has dependencies
+beyond Python's standard library.
 """
 from __future__ import annotations
 
+import math
+
 import pytest
 
-from harbor_view.chart.viewport import NM, solve_viewport
+from harbor_view.chart.viewport import NM, solve_viewport, to_local_frame
 from harbor_view.chart.geometry import REF_LAT, REF_LON
 
 
@@ -16,9 +19,9 @@ from harbor_view.chart.geometry import REF_LAT, REF_LON
 # solve_viewport — pure geometry
 # ---------------------------------------------------------------------------
 
-def test_x_max_matches_offshore_range():
-    """x_max must be exactly offshore_range_nm * NM metres east of origin."""
-    _, x_max, _, _ = solve_viewport(offshore_range_nm=8.0, panel_aspect=1.78)
+def test_x_max_matches_seaward_range():
+    """x_max must be exactly seaward_range_nm * NM metres from origin."""
+    _, x_max, _, _ = solve_viewport(seaward_range_nm=8.0, panel_aspect=1.78)
     assert x_max == pytest.approx(8.0 * NM)
 
 
@@ -48,7 +51,7 @@ def test_y_symmetric_around_origin():
 
 
 def test_scaling_is_proportional():
-    """Doubling offshore_range_nm uniformly doubles all four bounds."""
+    """Doubling seaward_range_nm uniformly doubles all four bounds."""
     x_min_8, x_max_8, y_min_8, y_max_8 = solve_viewport(8.0, 1.78)
     x_min_4, x_max_4, y_min_4, y_max_4 = solve_viewport(4.0, 1.78)
     assert x_min_8 == pytest.approx(2 * x_min_4)
@@ -58,7 +61,7 @@ def test_scaling_is_proportional():
 
 
 def test_x_min_is_negative():
-    """x_min must be negative: the viewport extends west (land) of the origin."""
+    """x_min must be negative: the viewport extends behind (land-side of) the origin."""
     x_min, _, _, _ = solve_viewport(8.0, 1.78)
     assert x_min < 0.0
 
@@ -77,14 +80,14 @@ def test_coast_frac_zero_land_is_left_edge():
         solve_viewport(8.0, 1.78, coast_frac_from_left=0.0)
 
 
-def test_invalid_offshore_range_raises():
+def test_invalid_seaward_range_raises():
     with pytest.raises(ValueError):
-        solve_viewport(offshore_range_nm=0.0, panel_aspect=1.78)
+        solve_viewport(seaward_range_nm=0.0, panel_aspect=1.78)
 
 
 def test_invalid_panel_aspect_raises():
     with pytest.raises(ValueError):
-        solve_viewport(offshore_range_nm=8.0, panel_aspect=0.0)
+        solve_viewport(seaward_range_nm=8.0, panel_aspect=0.0)
 
 
 def test_invalid_coast_frac_raises():
@@ -93,7 +96,7 @@ def test_invalid_coast_frac_raises():
 
 
 def test_wider_panel_gives_smaller_y_span():
-    """A wider (lower aspect) panel shows less north/south for the same offshore range."""
+    """A wider (lower aspect) panel shows less north/south for the same seaward range."""
     _, _, y_min_tall, y_max_tall = solve_viewport(8.0, panel_aspect=2.0)
     _, _, y_min_wide, y_max_wide = solve_viewport(8.0, panel_aspect=1.0)
     y_span_tall = y_max_tall - y_min_tall
@@ -102,10 +105,10 @@ def test_wider_panel_gives_smaller_y_span():
 
 
 def test_representative_hybrid_renderer_values():
-    """For the hybrid renderer panel (~1.78 aspect, 8 NM offshore) the viewport
-    should extend roughly 9 NM north and south and about 2 NM west."""
+    """For the hybrid renderer panel (~1.78 aspect, 8 NM seaward) the viewport
+    should extend roughly 9 NM along-shore and about 2 NM behind the reference."""
     x_min, x_max, y_min, y_max = solve_viewport(
-        offshore_range_nm=8.0,
+        seaward_range_nm=8.0,
         panel_aspect=1.779,
         coast_frac_from_left=0.21,
     )
@@ -145,3 +148,70 @@ def test_port_everglades_within_8nm_offshore_viewport():
     x_min, x_max, y_min, y_max = solve_viewport(8.0, panel_aspect=1.87)
     assert x_min <= x_pe <= x_max, f"Port Everglades x={x_pe:.0f} outside [{x_min:.0f}, {x_max:.0f}]"
     assert y_min <= y_pe <= y_max, f"Port Everglades y={y_pe:.0f} outside [{y_min:.0f}, {y_max:.0f}]"
+
+
+# ---------------------------------------------------------------------------
+# to_local_frame — seaward bearing rotation
+# ---------------------------------------------------------------------------
+
+def test_bearing_90_is_identity():
+    """Bearing 90° (east) maps geographic east to +x_local and north to +y_local."""
+    # A point 1000 m due east in geographic coordinates
+    x_local, y_local = to_local_frame(1000.0, 0.0, seaward_bearing_deg=90.0)
+    assert x_local == pytest.approx(1000.0, abs=1e-9)
+    assert y_local == pytest.approx(0.0, abs=1e-9)
+
+    # A point 1000 m due north in geographic coordinates
+    x_local, y_local = to_local_frame(0.0, 1000.0, seaward_bearing_deg=90.0)
+    assert x_local == pytest.approx(0.0, abs=1e-9)
+    assert y_local == pytest.approx(1000.0, abs=1e-9)
+
+
+def test_bearing_270_reverses_east_west():
+    """Bearing 270° (west is seaward) maps geographic east to -x_local."""
+    # A point 1000 m due east in geographic frame → should be landward (negative)
+    x_local, y_local = to_local_frame(1000.0, 0.0, seaward_bearing_deg=270.0)
+    assert x_local == pytest.approx(-1000.0, abs=1e-9)
+    assert y_local == pytest.approx(0.0, abs=1e-9)
+
+    # A point 1000 m due north → should map to -y_local (south is left when facing west)
+    x_local, y_local = to_local_frame(0.0, 1000.0, seaward_bearing_deg=270.0)
+    assert x_local == pytest.approx(0.0, abs=1e-9)
+    assert y_local == pytest.approx(-1000.0, abs=1e-9)
+
+
+def test_bearing_0_north_is_seaward():
+    """Bearing 0° (north is seaward) maps geographic north to +x_local."""
+    x_local, y_local = to_local_frame(0.0, 1000.0, seaward_bearing_deg=0.0)
+    assert x_local == pytest.approx(1000.0, abs=1e-9)
+    assert y_local == pytest.approx(0.0, abs=1e-9)
+
+    # Geographic east → +y_local (east is left when facing north; +y = CCW from seaward)
+    x_local, y_local = to_local_frame(1000.0, 0.0, seaward_bearing_deg=0.0)
+    assert x_local == pytest.approx(0.0, abs=1e-9)
+    assert y_local == pytest.approx(-1000.0, abs=1e-9)
+
+
+@pytest.mark.parametrize("bearing_deg", [0.0, 45.0, 90.0, 135.0, 180.0, 270.0])
+def test_bearing_preserves_distance(bearing_deg):
+    """to_local_frame is a rigid rotation: it preserves Euclidean distance."""
+    x_geo, y_geo = 3000.0, 4000.0  # distance = 5000 m
+    x_local, y_local = to_local_frame(x_geo, y_geo, bearing_deg)
+    dist_geo = math.hypot(x_geo, y_geo)
+    dist_local = math.hypot(x_local, y_local)
+    assert dist_local == pytest.approx(dist_geo, rel=1e-9)
+
+
+def test_default_seaward_bearing_is_east():
+    """SEAWARD_BEARING_DEG must default to 90° (east-facing) for Fort Lauderdale."""
+    from harbor_view.chart.geometry import SEAWARD_BEARING_DEG
+    assert SEAWARD_BEARING_DEG == pytest.approx(90.0, abs=1e-9)
+
+
+def test_viewport_scale_independent_of_bearing():
+    """solve_viewport knows nothing about bearing; its scale is set by seaward_range_nm."""
+    x_min, x_max, y_min, y_max = solve_viewport(8.0, 1.78)
+    # x_max is always seaward_range_nm * NM regardless of any bearing
+    assert x_max == pytest.approx(8.0 * NM)
+    # The viewport bounds are purely a function of range, aspect, and coast_frac
+    assert (x_max - x_min) == pytest.approx(8.0 * NM / 0.79, rel=1e-6)

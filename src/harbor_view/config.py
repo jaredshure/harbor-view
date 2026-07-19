@@ -25,7 +25,7 @@ Environment variables:
 The reference location (HARBOR_VIEW_REFERENCE_LAT/LON) is the local
 coordinate origin and the vertical composition centre of the rendered
 chart.  Set it to the observer's actual position; the viewport solver
-derives everything else from there and VIEW_OFFSHORE_RANGE_NM.
+derives everything else from there and VIEW_SEAWARD_RANGE_NM.
 """
 from __future__ import annotations
 

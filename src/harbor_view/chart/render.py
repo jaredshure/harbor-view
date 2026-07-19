@@ -110,13 +110,14 @@ def build_layout():
 # ---------------------------------------------------------------------------
 # Map geography
 # ---------------------------------------------------------------------------
-# VIEW_OFFSHORE_RANGE_NM is the single end-user tuning knob.  Changing it
-# uniformly scales the entire chart: more ocean offshore, more north/south
-# context, and more land to the west all grow proportionally.  The viewport
-# solver in harbor_view.chart.viewport derives everything else from this
-# value and the panel's physical aspect ratio.
-VIEW_OFFSHORE_RANGE_NM = float(
-    os.environ.get("HARBOR_VIEW_OFFSHORE_RANGE_NM", "8.0")
+# VIEW_SEAWARD_RANGE_NM is the single end-user tuning knob.  Changing it
+# uniformly scales the entire chart: more seaward depth, more along-shore
+# context, and more land behind the reference all grow proportionally.  The
+# viewport solver in harbor_view.chart.viewport derives everything else from
+# this value and the panel's physical aspect ratio.  Measured from the
+# reference location (The Palms), not from the shoreline.
+VIEW_SEAWARD_RANGE_NM = float(
+    os.environ.get("HARBOR_VIEW_SEAWARD_RANGE_NM", "8.0")
 )
 
 # COAST_FRAC_FROM_LEFT is an internal design constant, not user-facing.
@@ -132,7 +133,7 @@ def compute_view_window(map_ax) -> tuple[float, float, float, float]:
     Reads the panel's physical size from the axes' figure position, then
     delegates to solve_viewport() to derive (x_min, x_max, y_min, y_max)
     so that set_aspect('equal') fills the panel with no letterboxing and
-    VIEW_OFFSHORE_RANGE_NM of ocean appears to the east of the reference.
+    VIEW_SEAWARD_RANGE_NM of water appears seaward of the reference.
     """
     bbox = map_ax.get_position()
     fig_w_in, fig_h_in = map_ax.get_figure().get_size_inches()
@@ -140,7 +141,7 @@ def compute_view_window(map_ax) -> tuple[float, float, float, float]:
     panel_h_in = bbox.height * fig_h_in
     panel_aspect = panel_h_in / panel_w_in
 
-    return solve_viewport(VIEW_OFFSHORE_RANGE_NM, panel_aspect, COAST_FRAC_FROM_LEFT)
+    return solve_viewport(VIEW_SEAWARD_RANGE_NM, panel_aspect, COAST_FRAC_FROM_LEFT)
 
 
 def draw_basemap(map_ax, scene, x_min, x_max, y_min, y_max):

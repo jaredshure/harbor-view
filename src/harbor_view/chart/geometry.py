@@ -13,10 +13,13 @@ the scene occupies the composition's centre.
 """
 from __future__ import annotations
 
+import math
 import os
 
 import numpy as np
 from scipy.interpolate import CubicSpline
+
+from harbor_view.chart.viewport import to_local_frame
 
 # Reference location: The Palms, 2100 N Ocean Blvd, Fort Lauderdale.
 # This is the observer's home — the geographic anchor of the chart.
@@ -27,20 +30,34 @@ REF_LON = float(os.environ.get("HARBOR_VIEW_REFERENCE_LON", "-80.100832"))
 _M_PER_DEG_LAT = 111_320.0
 _M_PER_DEG_LON = 111_320.0 * np.cos(np.radians(REF_LAT))
 
+# Seaward bearing: the compass direction that points toward open water from
+# the reference location.  90° = east (Fort Lauderdale default).  Changing
+# this rotates the entire local coordinate frame so +x always points seaward
+# and +y always points 90° CCW from seaward (north for an east-facing site).
+SEAWARD_BEARING_DEG = float(
+    os.environ.get("HARBOR_VIEW_SEAWARD_BEARING_DEG", "90.0")
+)
+
 NM = 1852.0  # meters per nautical mile
 
 
 def to_xy(lat: float, lon: float) -> tuple[float, float]:
-    """Project lat/lon (degrees) to local meters from the reference point."""
-    x = (lon - REF_LON) * _M_PER_DEG_LON
-    y = (lat - REF_LAT) * _M_PER_DEG_LAT
-    return x, y
+    """Project lat/lon (degrees) to local metres from the reference point.
+
+    Returns (x_local, y_local) in the seaward coordinate frame where +x is
+    seaward (HARBOR_VIEW_SEAWARD_BEARING_DEG) and +y is 90° CCW from that.
+    For the default east-facing bearing (90°) this is identical to the
+    standard east-north frame.
+    """
+    x_geo = (lon - REF_LON) * _M_PER_DEG_LON
+    y_geo = (lat - REF_LAT) * _M_PER_DEG_LAT
+    return to_local_frame(x_geo, y_geo, SEAWARD_BEARING_DEG)
 
 
 # Hand-placed control points approximating the real shoreline curvature
 # from south of Port Everglades (25.95 N) up through Deerfield Beach
 # (26.37 N).  Extended northward from 26.23 N to cover the viewport
-# extent when VIEW_OFFSHORE_RANGE_NM = 8 with The Palms as reference
+# extent when VIEW_SEAWARD_RANGE_NM = 8 with The Palms as reference
 # (requires ~10 NM north of The Palms = ~26.31 N; points reach 26.37 N
 # to provide a generous clip buffer).
 _CONTROL_LATLON = [
