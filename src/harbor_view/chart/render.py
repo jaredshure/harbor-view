@@ -36,6 +36,7 @@ from matplotlib.transforms import Affine2D
 import numpy as np
 
 from harbor_view.chart.geometry import build_scene, to_xy, NM
+from harbor_view.chart.viewport import solve_viewport
 from harbor_view.chart.glyphs import GLYPH_BY_KIND, home_marker_path
 from harbor_view.providers import VesselProvider, PlaceholderProvider
 
@@ -109,19 +110,30 @@ def build_layout():
 # ---------------------------------------------------------------------------
 # Map geography
 # ---------------------------------------------------------------------------
-VIEW_HALF_HEIGHT_NM = 7.2
-# Sprint 2 composition pass: shift the coastline ~25% further left
-# (0.28 -> 0.21 of panel width) than Sprint 1's settings, increasing
-# open ocean so the Atlantic reads as the clear visual hero. Offshore
-# distance stays within the 5-10 nm requirement (~6.1 nm at this
-# setting).
+# VIEW_SEAWARD_RANGE_NM is the single end-user tuning knob.  Changing it
+# uniformly scales the entire chart: more seaward depth, more along-shore
+# context, and more land behind the reference all grow proportionally.  The
+# viewport solver in harbor_view.chart.viewport derives everything else from
+# this value and the panel's physical aspect ratio.  Measured from the
+# reference location (The Palms), not from the shoreline.
+VIEW_SEAWARD_RANGE_NM = float(
+    os.environ.get("HARBOR_VIEW_SEAWARD_RANGE_NM", "8.0")
+)
+
+# COAST_FRAC_FROM_LEFT is an internal design constant, not user-facing.
+# It places the reference location (The Palms) at 21 % from the left edge
+# of the map panel — giving 21 % land/ICW context to the west and 79 %
+# ocean to the east.  Sprint 2 composition pass: 0.28 → 0.21.
 COAST_FRAC_FROM_LEFT = 0.21
 
 
-def compute_view_window(map_ax):
-    """Pick an x/y window (in local meters) whose aspect ratio matches the
-    map panel's on-canvas aspect ratio, so set_aspect('equal') fills the
-    panel with no letterboxing, and the coastline sits left-of-center.
+def compute_view_window(map_ax) -> tuple[float, float, float, float]:
+    """Return the geographic viewport in local metres for the given map panel.
+
+    Reads the panel's physical size from the axes' figure position, then
+    delegates to solve_viewport() to derive (x_min, x_max, y_min, y_max)
+    so that set_aspect('equal') fills the panel with no letterboxing and
+    VIEW_SEAWARD_RANGE_NM of water appears seaward of the reference.
     """
     bbox = map_ax.get_position()
     fig_w_in, fig_h_in = map_ax.get_figure().get_size_inches()
@@ -129,13 +141,7 @@ def compute_view_window(map_ax):
     panel_h_in = bbox.height * fig_h_in
     panel_aspect = panel_h_in / panel_w_in
 
-    y_span_m = VIEW_HALF_HEIGHT_NM * 2 * NM
-    x_span_m = y_span_m / panel_aspect
-
-    x_min = -COAST_FRAC_FROM_LEFT * x_span_m
-    x_max = x_min + x_span_m
-    y_min, y_max = -VIEW_HALF_HEIGHT_NM * NM, VIEW_HALF_HEIGHT_NM * NM
-    return x_min, x_max, y_min, y_max
+    return solve_viewport(VIEW_SEAWARD_RANGE_NM, panel_aspect, COAST_FRAC_FROM_LEFT)
 
 
 def draw_basemap(map_ax, scene, x_min, x_max, y_min, y_max):
@@ -594,8 +600,11 @@ def render(
 
     fig, sidebar_ax, map_ax = build_layout()
 
-    scene = build_scene(view_half_height_nm=VIEW_HALF_HEIGHT_NM)
+    # Compute geographic extent first so build_scene clips the coastline
+    # geometry to exactly the rendered viewport, not a fixed constant.
     x_min, x_max, y_min, y_max = compute_view_window(map_ax)
+    y_half_nm = (y_max - y_min) / 2.0 / NM
+    scene = build_scene(view_half_height_nm=y_half_nm)
 
     draw_basemap(map_ax, scene, x_min, x_max, y_min, y_max)
     draw_depth_contours(map_ax, x_min, x_max, y_min, y_max, scene)

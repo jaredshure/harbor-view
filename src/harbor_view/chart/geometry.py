@@ -1,56 +1,82 @@
 """Coastline geometry for the Harbor View chart scene.
 
 Coordinates are local projected meters in a simple equirectangular
-approximation, origin at the configured viewport center
-(HARBOR_VIEW_VIEWPORT_LAT/LON). +x = east (offshore), +y = north.
+approximation, origin at the configured reference location
+(HARBOR_VIEW_REFERENCE_LAT/LON). +x = east (offshore), +y = north.
 
-The shoreline control points represent the real Fort Lauderdale
-coastline — this is a hand-built approximation, not a literal NOAA
-chart extract (see docs/task-001-notes.md for why). The viewport
-center shifts which part of that coastline is at the origin, and
-therefore which part of the scene occupies the composition's centre.
+The shoreline control points represent the real Atlantic coast from
+south of Port Everglades up through Deerfield Beach — a hand-built
+approximation, not a literal NOAA chart extract (see
+docs/task-001-notes.md for why). The reference location shifts which
+part of that coastline is at the origin, and therefore which part of
+the scene occupies the composition's centre.
 """
 from __future__ import annotations
 
+import math
 import os
 
 import numpy as np
 from scipy.interpolate import CubicSpline
 
-# Viewport/projection reference point. Configurable so the composition
-# centre can be tuned without touching rendering code. Reads the same
-# env vars as harbor_view.config.DEFAULT_CONFIG.
-REF_LAT = float(os.environ.get("HARBOR_VIEW_VIEWPORT_LAT", "26.0906"))
-REF_LON = float(os.environ.get("HARBOR_VIEW_VIEWPORT_LON", "-80.1095"))
+from harbor_view.chart.viewport import to_local_frame
+
+# Reference location: The Palms, 2100 N Ocean Blvd, Fort Lauderdale.
+# This is the observer's home — the geographic anchor of the chart.
+# Configurable via environment variables so the chart can be deployed
+# from any coastal vantage point without code changes.
+REF_LAT = float(os.environ.get("HARBOR_VIEW_REFERENCE_LAT", "26.155531"))
+REF_LON = float(os.environ.get("HARBOR_VIEW_REFERENCE_LON", "-80.100832"))
 _M_PER_DEG_LAT = 111_320.0
 _M_PER_DEG_LON = 111_320.0 * np.cos(np.radians(REF_LAT))
+
+# Seaward bearing: the compass direction that points toward open water from
+# the reference location.  90° = east (Fort Lauderdale default).  Changing
+# this rotates the entire local coordinate frame so +x always points seaward
+# and +y always points 90° CCW from seaward (north for an east-facing site).
+SEAWARD_BEARING_DEG = float(
+    os.environ.get("HARBOR_VIEW_SEAWARD_BEARING_DEG", "90.0")
+)
 
 NM = 1852.0  # meters per nautical mile
 
 
 def to_xy(lat: float, lon: float) -> tuple[float, float]:
-    """Project lat/lon (degrees) to local meters from the reference point."""
-    x = (lon - REF_LON) * _M_PER_DEG_LON
-    y = (lat - REF_LAT) * _M_PER_DEG_LAT
-    return x, y
+    """Project lat/lon (degrees) to local metres from the reference point.
+
+    Returns (x_local, y_local) in the seaward coordinate frame where +x is
+    seaward (HARBOR_VIEW_SEAWARD_BEARING_DEG) and +y is 90° CCW from that.
+    For the default east-facing bearing (90°) this is identical to the
+    standard east-north frame.
+    """
+    x_geo = (lon - REF_LON) * _M_PER_DEG_LON
+    y_geo = (lat - REF_LAT) * _M_PER_DEG_LAT
+    return to_local_frame(x_geo, y_geo, SEAWARD_BEARING_DEG)
 
 
 # Hand-placed control points approximating the real shoreline curvature
-# from south of Port Everglades up past the Galt Ocean Mile stretch
-# (where The Palms condominiums sit, ~26.13 N).
+# from south of Port Everglades (25.95 N) up through Deerfield Beach
+# (26.37 N).  Extended northward from 26.23 N to cover the viewport
+# extent when VIEW_SEAWARD_RANGE_NM = 8 with The Palms as reference
+# (requires ~10 NM north of The Palms = ~26.31 N; points reach 26.37 N
+# to provide a generous clip buffer).
 _CONTROL_LATLON = [
     (25.950, -80.0905),
     (25.995, -80.0960),
     (26.030, -80.1005),
     (26.060, -80.1035),
     (26.075, -80.1058),
-    (26.0906, -80.1095),  # inlet centerline
+    (26.0906, -80.1095),  # Port Everglades inlet centerline
     (26.106, -80.1062),
     (26.122, -80.1035),
     (26.138, -80.1008),
     (26.160, -80.0980),
     (26.190, -80.0945),
     (26.230, -80.0900),
+    (26.260, -80.0845),  # Pompano Beach area
+    (26.295, -80.0820),  # Hillsboro Inlet vicinity
+    (26.330, -80.0790),  # north Pompano / south Deerfield
+    (26.370, -80.0755),  # Deerfield Beach area
 ]
 
 
