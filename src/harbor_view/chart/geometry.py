@@ -160,6 +160,11 @@ def build_scene(view_half_height_nm: float = 4.5):
     y_min, y_max = -view_half_height_nm * NM, view_half_height_nm * NM
     ox, oy, nx, ny = _clip_and_pin_to_bounds(raw_x, raw_y, raw_nx, raw_ny, y_min, y_max)
 
+    # Port Everglades inlet y-coordinate in the local frame (south of The Palms
+    # reference).  All inlet-relative geometry anchors to this value, not y=0,
+    # because the reference origin is now The Palms, not the inlet itself.
+    _, pe_y = to_xy(26.0906, -80.1095)
+
     # Priority 1 (Sprint 2.5): the ocean-facing shoreline itself -- a
     # clean cubic spline -- reads as too uniform/too straight at chart
     # scale. Perturb it with the same family of low-frequency,
@@ -168,7 +173,7 @@ def build_scene(view_half_height_nm: float = 4.5):
     # geometrically sensible as the shore's bearing changes, and fades
     # to zero near the inlet so the channel cut remains clean and the
     # endpoints stay pinned exactly at y_min/y_max.
-    dist_from_inlet_raw = np.abs(oy - 0.0)
+    dist_from_inlet_raw = np.abs(oy - pe_y)
     shore_wobble = (
         14 * np.sin(oy / NM * 2.3 + 1.1)
         + 8 * np.sin(oy / NM * 5.1 + 0.4)
@@ -186,7 +191,7 @@ def build_scene(view_half_height_nm: float = 4.5):
     oy = oy - ny * shore_wobble
     oy[0], oy[-1] = y_min, y_max  # re-pin exactly (edge_fade already ~0 here, but be exact)
 
-    # Island width: narrows to a real gap right at the inlet (y=0),
+    # Island width: narrows to a real gap right at the Port Everglades inlet,
     # widens away from it. The base taper establishes the inlet's
     # "waist"; layered low-frequency sine/cosine terms (NOT random
     # noise, so the result is deterministic and reproducible) add
@@ -195,7 +200,7 @@ def build_scene(view_half_height_nm: float = 4.5):
     # too-clean band. Amplitude is kept well within the island's own
     # width so it can't widen the visible land area or create new
     # inlets -- it only perturbs the existing edge.
-    dist_from_inlet = np.abs(oy - 0.0)
+    dist_from_inlet = np.abs(oy - pe_y)
     base_width = 360 - 360 * np.exp(-(dist_from_inlet / 230) ** 1.5)
     y_nm = oy / NM
     irregularity = (
@@ -239,7 +244,7 @@ def build_scene(view_half_height_nm: float = 4.5):
         gap_lo = oy[near_zero_width].min() - GAP_PAD_M
         gap_hi = oy[near_zero_width].max() + GAP_PAD_M
     else:
-        gap_lo, gap_hi = -GAP_PAD_M, GAP_PAD_M
+        gap_lo, gap_hi = pe_y - GAP_PAD_M, pe_y + GAP_PAD_M
     is_open = (oy >= gap_lo) & (oy <= gap_hi)
 
     # Build the channel polygon DIRECTLY from ocean_shore/icw_shore at
