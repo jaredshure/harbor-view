@@ -52,6 +52,7 @@ class WaveshareBackend:
         from waveshare_epd import epd7in5_V2
         epd = epd7in5_V2.EPD()
         panel = _fit_to_display(image, epd.width, epd.height)
+        panel = panel.rotate(90, expand=False)
         logger.debug(
             "Sending to Waveshare display: %dx%d (panel %dx%d)",
             panel.width, panel.height, epd.width, epd.height,
