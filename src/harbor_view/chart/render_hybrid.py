@@ -249,11 +249,14 @@ def _draw_calibration_debug(
     )
 
 
-def render_hybrid(
-    output_path: str = "output/harbor_view_hybrid.png",
+def render_hybrid_to_image(
     vessel_provider: VesselProvider | None = None,
-) -> str:
-    """Render Harbor View in hybrid mode and write a PNG to output_path.
+) -> "PIL.Image.Image":
+    """Render Harbor View in hybrid mode and return the result as a PIL Image.
+
+    This is the primary hybrid rendering entry point.  All compositing
+    happens here; delivery to disk or display is the caller's
+    responsibility via an output backend (see harbor_view.output).
 
     The reference artwork provides the cartographic background;
     vessel_provider supplies the live vessel data to draw on top.
@@ -270,6 +273,9 @@ def render_hybrid(
     Set HARBOR_VIEW_HYBRID_CALIBRATION_DEBUG=1 to add guide lines useful
     for screenshot comparison.  Normal output is never affected.
     """
+    import io
+    import PIL.Image
+
     if vessel_provider is None:
         vessel_provider = PlaceholderProvider()
 
@@ -378,11 +384,28 @@ def render_hybrid(
     if os.environ.get("HARBOR_VIEW_HYBRID_CALIBRATION_DEBUG"):
         _draw_calibration_debug(map_ax, x_min, x_max, y_min, y_max)
 
-    # --- Save --------------------------------------------------------------
-    out_dir = os.path.dirname(output_path)
-    if out_dir:
-        os.makedirs(out_dir, exist_ok=True)
-    fig.savefig(output_path, dpi=_DPI, facecolor="white")
+    # --- Return PIL Image --------------------------------------------------
+    buf = io.BytesIO()
+    fig.savefig(buf, format="png", dpi=_DPI, facecolor="white")
     plt.close(fig)
+    buf.seek(0)
+    img = PIL.Image.open(buf)
+    img.load()  # detach from the BytesIO before it goes out of scope
+    return img
+
+
+def render_hybrid(
+    output_path: str = "output/harbor_view_hybrid.png",
+    vessel_provider: VesselProvider | None = None,
+) -> str:
+    """Render Harbor View in hybrid mode and write a PNG to output_path.
+
+    Thin wrapper around render_hybrid_to_image() that writes the result
+    to disk via PngBackend (atomic temp-file rename).  Kept for backwards
+    compatibility with callers and tests that expect a path-based API.
+    """
+    from harbor_view.output.png import PngBackend
+    image = render_hybrid_to_image(vessel_provider)
+    PngBackend().write(image, output_path)
     logger.info("Hybrid render saved to %s", output_path)
     return output_path
