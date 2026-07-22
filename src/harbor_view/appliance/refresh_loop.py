@@ -44,26 +44,29 @@ from __future__ import annotations
 import logging
 import os
 import signal
-import tempfile
 import time
 
 from harbor_view.appliance.provider_selection import get_configured_provider
-from harbor_view.chart.render import render
+from harbor_view.chart.render import render_to_image
 
 logger = logging.getLogger("harbor_view.appliance.refresh_loop")
 
 
 def _get_render_fn():
-    """Return the render callable selected by HARBOR_VIEW_RENDER_MODE.
+    """Return the render-to-image callable selected by HARBOR_VIEW_RENDER_MODE.
 
     'procedural' (default): the existing matplotlib chart renderer.
     'hybrid': static artwork background + live vessel overlay.
+
+    The returned callable accepts vessel_provider as a keyword argument
+    and returns a PIL Image; delivery to disk or display is handled
+    separately by the output backend (see harbor_view.output).
     """
     mode = os.environ.get("HARBOR_VIEW_RENDER_MODE", "procedural").strip().lower()
     if mode == "hybrid":
-        from harbor_view.chart.render_hybrid import render_hybrid
-        return render_hybrid
-    return render
+        from harbor_view.chart.render_hybrid import render_hybrid_to_image
+        return render_hybrid_to_image
+    return render_to_image
 
 DEFAULT_OUTPUT_PATH = "/var/lib/harbor-view/harbor_view.png"
 DEFAULT_REFRESH_SECONDS = 60.0
@@ -82,48 +85,29 @@ def _read_float_env(name: str, default: float) -> float:
 
 
 def render_once(output_path: str, vessel_provider) -> bool:
-    """Render one frame to `output_path`, atomically.
+    """Render one frame and deliver it via the configured output backend.
 
-    Renders to a temporary file in the same directory as `output_path`
-    and replaces it in one atomic filesystem operation, so a process
-    watching `output_path` (the display layer) never observes a
-    partially-written file.
+    Calls the renderer to produce a PIL Image, then hands it to the
+    output backend selected by HARBOR_VIEW_OUTPUT (default: png).  The
+    PNG backend writes atomically so a concurrent reader never observes
+    a partially-written file; the Waveshare backend pushes directly to
+    the display.
 
     Returns True on success, False on any failure. Never raises --
     per requirement 6 ("log errors without interrupting the display"),
     the caller (the loop below) treats a False return as "nothing
     changed, try again next cycle," not as a reason to stop.
     """
-    out_dir = os.path.dirname(output_path) or "."
-    tmp_path = None
+    from harbor_view.output import get_output_backend
     try:
-        os.makedirs(out_dir, exist_ok=True)
-        # Suffix kept as ".png" (not ".png.tmp") because render()
-        # hands the path straight to matplotlib's savefig(), which
-        # infers the output format from the file extension -- a
-        # non-".png" suffix would make savefig raise. The "tmp-"
-        # prefix and leading "." are what mark this as scratch space;
-        # the extension stays accurate.
-        fd, tmp_path = tempfile.mkstemp(
-            dir=out_dir, prefix=".harbor_view_tmp_", suffix=".png"
-        )
-        os.close(fd)  # render() opens the path itself; we just need the name
-        _get_render_fn()(output_path=tmp_path, vessel_provider=vessel_provider)
-        os.replace(tmp_path, output_path)  # atomic on the same filesystem
-        tmp_path = None  # successfully moved; nothing left to clean up
+        image = _get_render_fn()(vessel_provider=vessel_provider)
+        get_output_backend().write(image, output_path)
     except Exception:
         logger.exception(
             "Render failed; the previously displayed image (if any) at "
             "%s is unchanged.", output_path,
         )
         return False
-    finally:
-        # If render() raised before reaching os.replace(), tmp_path is
-        # still set and may exist (possibly empty/partial) -- clean it
-        # up so temp files don't accumulate in the output directory
-        # over days/weeks of unattended operation.
-        if tmp_path and os.path.exists(tmp_path):
-            os.remove(tmp_path)
     return True
 
 

@@ -577,22 +577,25 @@ def draw_sidebar(sidebar_ax, now: _dt.datetime, config: HarborConfig):
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
-def render(
-    output_path: str = OUTPUT_PATH,
+def render_to_image(
     vessel_provider: VesselProvider | None = None,
     config: HarborConfig | None = None,
-) -> str:
-    """Render Harbor View to a PNG.
+) -> "PIL.Image.Image":
+    """Render Harbor View and return the result as a PIL Image.
 
-    `vessel_provider` supplies the vessels to draw via its
-    `get_vessels()` method -- the renderer calls that one method and
-    nothing else. Defaults to `PlaceholderProvider`.
+    This is the primary rendering entry point.  All drawing happens here;
+    delivery to disk or display is the caller's responsibility via an
+    output backend (see harbor_view.output).
+
+    `vessel_provider` supplies the vessels to draw.  Defaults to
+    `PlaceholderProvider`.
 
     `config` controls location name, city, home-marker position, and
-    timezone. Defaults to `DEFAULT_CONFIG`, which reads from environment
-    variables with sensible fallback values. Pass an explicit
-    `HarborConfig` to render a different location without changing env.
+    timezone.  Defaults to `DEFAULT_CONFIG`.
     """
+    import io
+    import PIL.Image
+
     if vessel_provider is None:
         vessel_provider = PlaceholderProvider()
     if config is None:
@@ -616,10 +619,29 @@ def render(
     now = _dt.datetime.now(tz=ZoneInfo(config.timezone))
     draw_sidebar(sidebar_ax, now, config)
 
-    out_dir = os.path.dirname(output_path)
-    os.makedirs(out_dir, exist_ok=True)
-    fig.savefig(output_path, dpi=DPI, facecolor="white")
+    buf = io.BytesIO()
+    fig.savefig(buf, format="png", dpi=DPI, facecolor="white")
     plt.close(fig)
+    buf.seek(0)
+    img = PIL.Image.open(buf)
+    img.load()  # detach from the BytesIO before it goes out of scope
+    return img
+
+
+def render(
+    output_path: str = OUTPUT_PATH,
+    vessel_provider: VesselProvider | None = None,
+    config: HarborConfig | None = None,
+) -> str:
+    """Render Harbor View to a PNG file at output_path.
+
+    Thin wrapper around render_to_image() that writes the result to disk
+    via PngBackend (atomic temp-file rename).  Kept for backwards
+    compatibility with callers and tests that expect a path-based API.
+    """
+    from harbor_view.output.png import PngBackend
+    image = render_to_image(vessel_provider, config)
+    PngBackend().write(image, output_path)
     return output_path
 
 
