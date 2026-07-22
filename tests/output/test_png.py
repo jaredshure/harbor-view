@@ -96,6 +96,8 @@ def test_waveshare_backend_calls_epd_api(monkeypatch):
     calls = []
 
     class FakeEPD:
+        width = 800
+        height = 480
         def init(self):       calls.append("init")
         def display(self, buf): calls.append("display")
         def getbuffer(self, img): return b""
@@ -116,11 +118,67 @@ def test_waveshare_backend_calls_epd_api(monkeypatch):
     assert calls == ["init", "display", "sleep"]
 
 
+# ---------------------------------------------------------------------------
+# _fit_to_display — pure geometry, no hardware needed
+# ---------------------------------------------------------------------------
+
+def test_fit_produces_exact_display_size():
+    from harbor_view.output.waveshare import _fit_to_display
+    src = Image.new("RGB", (1200, 1600), color=(128, 128, 128))
+    result = _fit_to_display(src, 800, 480)
+    assert result.size == (800, 480)
+
+
+def test_fit_converts_to_1bit():
+    from harbor_view.output.waveshare import _fit_to_display
+    src = Image.new("RGB", (800, 480), color=(200, 200, 200))
+    result = _fit_to_display(src, 800, 480)
+    assert result.mode == "1"
+
+
+def test_fit_preserves_aspect_ratio():
+    """A tall image (portrait) scaled to a wide panel must have letterbox bars."""
+    from harbor_view.output.waveshare import _fit_to_display
+    # 480×960 is 1:2 portrait; panel is 800×480 (landscape).
+    # Fit height 480 → width = 240; letterbox bars of 280px each side.
+    src = Image.new("RGB", (480, 960), color=(0, 0, 0))
+    result = _fit_to_display(src, 800, 480)
+    assert result.size == (800, 480)
+    # Corners should be white (part of the letterbox canvas).
+    # Convert back to RGB to read pixel values easily.
+    rgb = result.convert("RGB")
+    assert rgb.getpixel((0, 0)) == (255, 255, 255), "top-left corner should be white letterbox"
+    assert rgb.getpixel((799, 479)) == (255, 255, 255), "bottom-right corner should be white letterbox"
+
+
+def test_fit_does_not_upscale():
+    """A source image smaller than the panel is centred without upscaling."""
+    from harbor_view.output.waveshare import _fit_to_display
+    src = Image.new("RGB", (100, 100), color=(0, 0, 0))
+    result = _fit_to_display(src, 800, 480)
+    assert result.size == (800, 480)
+    # Centre pixel should be black (the source); corners should be white.
+    rgb = result.convert("RGB")
+    cx, cy = 800 // 2, 480 // 2
+    assert rgb.getpixel((cx, cy)) == (0, 0, 0), "centre should contain source content"
+    assert rgb.getpixel((0, 0)) == (255, 255, 255), "corner should be white canvas"
+
+
+def test_fit_exact_size_is_identity():
+    """An image already at display dimensions should pass through unchanged."""
+    from harbor_view.output.waveshare import _fit_to_display
+    src = Image.new("RGB", (800, 480), color=(123, 45, 67))
+    result = _fit_to_display(src, 800, 480)
+    assert result.size == (800, 480)
+
+
 def test_factory_selects_waveshare(monkeypatch):
     """get_output_backend() returns WaveshareBackend when env var is set."""
     import sys
 
     class FakeEPD:
+        width = 800
+        height = 480
         def init(self): pass
         def display(self, buf): pass
         def getbuffer(self, img): return b""
