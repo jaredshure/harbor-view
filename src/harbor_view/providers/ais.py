@@ -158,12 +158,49 @@ class _PartialVessel:
             return False
         return vessel_type_for_ais_code(self.ais_type_code) is not None
 
+    def is_drawable_show_all(self) -> bool:
+        """Show-all diagnostic mode: drawable if the vessel has a valid
+        position and a name.  AIS type mapping is not required -- unmapped
+        types render with the UNKNOWN diamond glyph rather than being dropped.
+
+        Stricter than is_drawable_dev() (which accepts even nameless targets)
+        but relaxes the AIS type requirement relative to production mode.
+        """
+        if self.latitude is None or self.longitude is None:
+            return False
+        return bool(self.name and self.name.strip())
+
     def is_drawable_dev(self) -> bool:
         """Development-mode drawability: any vessel with a valid position
         is renderable.  AIS type and name are not required -- unmapped
         types use the UNKNOWN glyph and the MMSI is used as a fallback name.
         """
         return self.latitude is not None and self.longitude is not None
+
+    def to_vessel_show_all(self) -> Vessel:
+        """Convert to Vessel for show-all diagnostic mode.
+
+        Preserves the vessel's real name, position, heading, and all
+        available metadata.  Unmapped AIS types fall back to
+        VesselType.UNKNOWN so the vessel renders with the diagnostic
+        diamond glyph rather than being mis-classified as a known type.
+        Mapped types pass through unchanged.
+        """
+        vessel_type = vessel_type_for_ais_code(self.ais_type_code) or VesselType.UNKNOWN
+        status = _nav_status_to_vessel_status(self.nav_status_code)
+        destination = (self.destination or "").strip().rstrip("@").strip()
+        return Vessel(
+            name=self.name.strip(),
+            vessel_type=vessel_type,
+            latitude=self.latitude,
+            longitude=self.longitude,
+            heading_deg=self.heading_deg if self.heading_deg is not None else 0.0,
+            origin="",
+            destination=destination,
+            mmsi=self.mmsi,
+            speed_kn=self.speed_kn,
+            status=status,
+        )
 
     def to_vessel_dev(self) -> Vessel:
         """Convert to Vessel for development-mode rendering.
@@ -270,6 +307,7 @@ class AISProvider(VesselProvider):
         listen_seconds: float | None = None,
         stale_seconds: float | None = None,
         filter_mode: str | None = None,
+        show_all: bool | None = None,
     ) -> None:
         # Explicit constructor args are supported for tests and for
         # callers that already have configuration in hand; the normal
@@ -317,6 +355,17 @@ class AISProvider(VesselProvider):
             )
             _raw_mode = None
         self._filter_mode: str | None = _raw_mode or None
+        # HARBOR_VIEW_SHOW_ALL_VESSELS=1 is a targeted diagnostic mode that
+        # renders any vessel with a valid position and name, regardless of
+        # whether its AIS type code is in Harbor View's supported set.
+        # Unmapped types get the UNKNOWN diamond glyph.  Intended for live
+        # AIS testing when the area is producing type-37 pleasure craft etc.
+        # that would otherwise be silently filtered.
+        if show_all is not None:
+            self._show_all = bool(show_all)
+        else:
+            _sa = os.environ.get("HARBOR_VIEW_SHOW_ALL_VESSELS", "").strip().lower()
+            self._show_all = _sa in ("1", "true", "yes")
 
     def get_vessels(self) -> list[Vessel]:
         if not self._api_key:
@@ -371,6 +420,9 @@ class AISProvider(VesselProvider):
         if self._filter_mode == "development":
             vessels = [p.to_vessel_dev() for p in self._cache.values()
                        if p.is_drawable_dev()]
+        elif self._show_all:
+            vessels = [p.to_vessel_show_all() for p in self._cache.values()
+                       if p.is_drawable_show_all()]
         else:
             vessels = [p.to_vessel() for p in self._cache.values() if p.is_drawable()]
         logger.info(
@@ -397,7 +449,10 @@ class AISProvider(VesselProvider):
             for mmsi in sorted(has_both):
                 p = self._cache[mmsi]
                 mapped_type = vessel_type_for_ais_code(p.ais_type_code)
-                drawable = p.is_drawable()
+                if self._show_all:
+                    drawable = p.is_drawable_show_all()
+                else:
+                    drawable = p.is_drawable()
                 reason: str | None = None
                 if not drawable:
                     if not p.name or not p.name.strip():
@@ -407,7 +462,11 @@ class AISProvider(VesselProvider):
                     else:
                         reason = "other"
                     reject_counts[reason] += 1
-                hv_type_str = mapped_type.value.upper() if mapped_type is not None else "none"
+                elif self._show_all and mapped_type is None:
+                    # Vessel is drawable in show-all mode via UNKNOWN fallback.
+                    reason = "diagnostic show-all mode"
+                effective_type = mapped_type or (VesselType.UNKNOWN if self._show_all else None)
+                hv_type_str = effective_type.value.upper() if effective_type is not None else "none"
                 logger.info(
                     "  MMSI=%-12s  name=%-28s  lat=%8.4f  lon=%9.4f  "
                     "heading=%-8s  ais_type=%-4s  hv_type=%-8s  drawable=%s%s",
@@ -421,19 +480,20 @@ class AISProvider(VesselProvider):
                     "yes" if drawable else "no",
                     f"  reason={reason}" if reason else "",
                 )
-            logger.info(
-                "Rejection summary (both=true, drawable=false):\n"
-                "  %-30s  %s\n"
-                "  %s\n"
-                "  %-30s  %d\n"
-                "  %-30s  %d\n"
-                "  %-30s  %d",
-                "Reason", "Count",
-                "-" * 40,
-                "unmapped vessel type", reject_counts["unmapped vessel type"],
-                "missing name", reject_counts["missing name"],
-                "other", reject_counts["other"],
-            )
+            if not self._show_all:
+                logger.info(
+                    "Rejection summary (both=true, drawable=false):\n"
+                    "  %-30s  %s\n"
+                    "  %s\n"
+                    "  %-30s  %d\n"
+                    "  %-30s  %d\n"
+                    "  %-30s  %d",
+                    "Reason", "Count",
+                    "-" * 40,
+                    "unmapped vessel type", reject_counts["unmapped vessel type"],
+                    "missing name", reject_counts["missing name"],
+                    "other", reject_counts["other"],
+                )
 
         if os.environ.get("HARBOR_VIEW_DEBUG_AIS"):
             self._print_debug_table()
@@ -530,7 +590,12 @@ class AISProvider(VesselProvider):
         )
         sep = "-" * len(header)
 
-        mode_label = "DEVELOPMENT" if self._filter_mode == "development" else "PRODUCTION"
+        if self._filter_mode == "development":
+            mode_label = "DEVELOPMENT"
+        elif self._show_all:
+            mode_label = "SHOW-ALL (diagnostic)"
+        else:
+            mode_label = "PRODUCTION"
         print()
         print(f"Filter mode: {mode_label}")
         print("=" * len(header))
@@ -578,6 +643,24 @@ class AISProvider(VesselProvider):
                 else:
                     rendered = True
                     n_rendered += 1
+            elif self._show_all:
+                # Show-all mirrors is_drawable_show_all(): position + name
+                # required; unmapped AIS types accepted as UNKNOWN.
+                if not has_pos:
+                    reason = "missing position"
+                    n_filtered += 1
+                elif not has_name:
+                    reason = "missing name"
+                    n_filtered += 1
+                elif not in_vp:
+                    dirs, dist_m = _outside_info(x, y)
+                    reason = f"outside viewport [{dirs}, {dist_m:.0f} m]"
+                    n_outside_vp += 1
+                else:
+                    rendered = True
+                    if hv_type is None:
+                        reason = "diagnostic show-all mode"
+                    n_rendered += 1
             else:
                 if not has_pos:
                     reason = "missing position"
@@ -597,7 +680,8 @@ class AISProvider(VesselProvider):
                     n_rendered += 1
 
             ais_str = str(p.ais_type_code) if p.ais_type_code is not None else "—"
-            hv_str = hv_type.value.upper() if hv_type else "none"
+            effective_hv = hv_type or (VesselType.UNKNOWN if self._show_all else None)
+            hv_str = effective_hv.value.upper() if effective_hv else "none"
             lat_str = f"{p.latitude:.4f}" if has_pos else "—"
             lon_str = f"{p.longitude:.4f}" if has_pos else "—"
             hdg_str = f"{p.heading_deg:.0f}" if p.heading_deg is not None else "—"
