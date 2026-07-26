@@ -85,7 +85,7 @@ FONT_BODY = "DejaVu Sans"
 #                     scales the entire chart uniformly (along-shore and seaward)
 # COAST_FRAC_FROM_LEFT   fraction of x-span behind the reference (land context)
 #                     0.21 = 21 % land, 79 % ocean; Sprint 2 value (was 0.28)
-LAYOUT                = "portrait"   # "portrait" | "landscape"
+LAYOUT                = "landscape"  # "portrait" | "landscape"
 INFO_PANEL_FRAC       = 0.25
 VIEW_SEAWARD_RANGE_NM = float(os.environ.get("HARBOR_VIEW_SEAWARD_RANGE_NM", "8.0"))
 COAST_FRAC_FROM_LEFT  = 0.21
