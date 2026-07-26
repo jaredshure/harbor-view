@@ -386,19 +386,34 @@ VESSEL_TIER = {
 # loses weight, and route-line opacity/length fades, going down the
 # hierarchy.
 TIER_STYLE = {
-    # name_fs / detail_fs are sized to feel like chart annotations rather
-    # than UI labels: name is the primary find, route is a quiet footnote.
-    # Ratio between the two widens at lower tiers so minor vessels recede
-    # more aggressively. icon_scale unchanged from Sprint 7.1.
-    1: dict(icon_scale=360, name_fs=5.5, detail_fs=3.9, name_weight="bold"),
-    2: dict(icon_scale=300, name_fs=4.8, detail_fs=3.5, name_weight="normal"),
-    3: dict(icon_scale=260, name_fs=4.4, detail_fs=3.3, name_weight="normal"),
-    4: dict(icon_scale=210, name_fs=4.0, detail_fs=3.0, name_weight="normal"),
-    5: dict(icon_scale=190, name_fs=3.7, detail_fs=2.8, name_weight="normal"),
+    # name_fs ~30% larger than before; detail_fs ~75% of name_fs so the
+    # destination line is clearly subordinate but still legible at chart
+    # scale. icon_scale unchanged.
+    1: dict(icon_scale=360, name_fs=7.2, detail_fs=5.4, name_weight="bold"),
+    2: dict(icon_scale=300, name_fs=6.2, detail_fs=4.7, name_weight="normal"),
+    3: dict(icon_scale=260, name_fs=5.7, detail_fs=4.3, name_weight="normal"),
+    4: dict(icon_scale=210, name_fs=5.2, detail_fs=3.9, name_weight="normal"),
+    5: dict(icon_scale=190, name_fs=4.8, detail_fs=3.6, name_weight="normal"),
 }
+
+# Spacing fractions relative to the per-tier icon_scale (in data-coord metres).
+# _LABEL_SYMBOL_GAP: multiple of scale for the gap from symbol centre to the
+#   name-label anchor (was 1.10; increased for breathing room with larger fonts).
+# _LABEL_INTER_LINE: multiple of scale for the gap between the name-label anchor
+#   and the destination-label anchor (destination sits below the name, between
+#   the name and the vessel symbol).
+_LABEL_SYMBOL_GAP  = 1.30
+_LABEL_INTER_LINE  = 0.25
 
 
 def draw_vessel(map_ax, vessel, label_side="right", label_dy=0.0):
+    """Draw the vessel symbol and its name label.
+
+    Returns (name_text, dest_anchor) where dest_anchor is
+    (dest_px, dest_py, dest_ha, style) — the coordinates and style needed
+    to draw the destination line.  draw_fleet handles destination placement
+    after checking for label collisions; draw_vessel never draws it.
+    """
     x, y = to_xy(vessel.lat, vessel.lon)
     path = GLYPH_BY_KIND[vessel.kind]()
     tier = VESSEL_TIER[vessel.kind]
@@ -417,7 +432,8 @@ def draw_vessel(map_ax, vessel, label_side="right", label_dy=0.0):
         # Labels: place above the hull (seaward = upward in display).
         # label_dy nudges horizontally (along-shore = horizontal axis).
         label_px = y + label_dy
-        label_py = x + scale * 1.10
+        label_py = x + scale * _LABEL_SYMBOL_GAP
+        dest_py  = label_py - scale * _LABEL_INTER_LINE
         label_ha = "center"
         if abs(label_dy) > 1e-6:
             map_ax.plot([y + label_dy * 0.55, y], [x + scale * 0.5, x + scale * 0.55],
@@ -425,10 +441,11 @@ def draw_vessel(map_ax, vessel, label_side="right", label_dy=0.0):
     else:
         rotation = -theta
         translate_x, translate_y = x, y
-        label_dx = scale * 1.10 if label_side == "right" else -scale * 1.10
+        label_dx = scale * _LABEL_SYMBOL_GAP if label_side == "right" else -scale * _LABEL_SYMBOL_GAP
         label_ha = "left" if label_side == "right" else "right"
         label_px = x + label_dx
         label_py = y + label_dy
+        dest_py  = label_py - scale * _LABEL_INTER_LINE
         if abs(label_dy) > 1e-6:
             leader_x0 = x + (scale * 0.5 if label_side == "right" else -scale * 0.5)
             map_ax.plot([leader_x0, x + label_dx * 0.55], [y, y + label_dy],
@@ -440,13 +457,13 @@ def draw_vessel(map_ax, vessel, label_side="right", label_dy=0.0):
                        lw=0.7, transform=transform, zorder=9)
     map_ax.add_patch(patch)
 
-    route_str = f"{vessel.origin}  →  {vessel.destination}"
-    map_ax.text(label_px, label_py, vessel.name, fontsize=style["name_fs"],
-                color=COLOR_INK, family=FONT_BODY, ha=label_ha, va="bottom",
-                fontweight=style["name_weight"], zorder=10, clip_on=True)
-    map_ax.text(label_px, label_py, route_str, fontsize=style["detail_fs"],
-                color=COLOR_METADATA, family=FONT_BODY, ha=label_ha, va="top",
-                fontstyle="italic", alpha=0.65, zorder=10, clip_on=True)
+    name_text = map_ax.text(
+        label_px, label_py, vessel.name,
+        fontsize=style["name_fs"],
+        color=COLOR_INK, family=FONT_BODY, ha=label_ha, va="bottom",
+        fontweight=style["name_weight"], zorder=10, clip_on=True,
+    )
+    return name_text, (label_px, dest_py, label_ha, style)
 
 
 # Per-vessel label placement, keyed by name, chosen against the fixed
@@ -475,10 +492,59 @@ def draw_fleet(map_ax, vessels):
     whether they came from the placeholder fleet, a live AIS feed, or
     anything else. That's the whole point of Sprint 3's provider
     refactor: the renderer only ever sees `Vessel` objects.
+
+    Label placement is two-pass:
+      Pass 1 — draw all symbols and name labels (always shown, no collision
+               check; higher-tier vessels are drawn first so they claim
+               space before lower-priority vessels are checked).
+      Pass 2 — draw destination lines only where they would not overlap an
+               already-placed label bbox.  The name line is always kept;
+               the destination line is silently omitted when space is tight.
     """
-    for vessel in vessels:
+    if not vessels:
+        return
+
+    # Higher-tier vessels (cruise > cargo > tanker > pilot/tug) claim label
+    # space first, so their destination lines are the least likely to be
+    # suppressed in a crowded scene.
+    priority_sorted = sorted(vessels, key=lambda v: VESSEL_TIER.get(v.kind, 99))
+
+    # Pass 1: draw all vessel symbols and name labels.
+    label_info = []
+    for vessel in priority_sorted:
         side, dy = LABEL_PLACEMENT.get(vessel.name, ("right", 0))
-        draw_vessel(map_ax, vessel, label_side=side, label_dy=dy)
+        name_text, dest_anchor = draw_vessel(map_ax, vessel, label_side=side, label_dy=dy)
+        label_info.append((vessel, name_text, dest_anchor))
+
+    # Pass 2: draw destination lines with collision avoidance.
+    # get_renderer() is available on the Agg backend without a prior draw()
+    # call, which is what render_to_image() uses (matplotlib.use("Agg")).
+    renderer = map_ax.get_figure().canvas.get_renderer()
+
+    # Seed the placed-bbox list with every name label's bounding box,
+    # padded by a small margin so adjacent labels don't feel cramped.
+    placed = [
+        name_text.get_window_extent(renderer).expanded(1.08, 1.15)
+        for _, name_text, _ in label_info
+    ]
+
+    for i, (vessel, _name_text, (dest_px, dest_py, dest_ha, style)) in enumerate(label_info):
+        dest = vessel.destination
+        if not dest:
+            continue
+        dest_text = map_ax.text(
+            dest_px, dest_py, dest,
+            fontsize=style["detail_fs"],
+            color=COLOR_METADATA, family=FONT_BODY, ha=dest_ha, va="top",
+            alpha=0.75, zorder=10, clip_on=True,
+        )
+        dest_bbox = dest_text.get_window_extent(renderer).expanded(1.05, 1.10)
+        # Check against every OTHER placed bbox (skip index i = this vessel's
+        # own name label, which would always overlap the destination).
+        if any(dest_bbox.overlaps(bb) for j, bb in enumerate(placed) if j != i):
+            dest_text.remove()
+        else:
+            placed.append(dest_bbox)
 
 
 # ---------------------------------------------------------------------------
