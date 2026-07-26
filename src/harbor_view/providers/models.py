@@ -89,6 +89,7 @@ class Vessel:
     speed_kn: float | None = None
     status: VesselStatus | None = None
     timestamp: _dt.datetime | None = None
+    ais_type_code: int | None = None  # raw AIS ship-type code, preserved for debugging
 
     # --- Backward-compatible aliases -----------------------------------
     # The renderer (chart/render.py) and earlier fixtures referred to
