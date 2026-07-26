@@ -75,13 +75,28 @@ FONT_BODY = "DejaVu Sans"
 
 
 # ---------------------------------------------------------------------------
-# Canvas + layout
+# Tuning block — all four experimental knobs live here.
+# Change values in this block only; everything else is derived.
 # ---------------------------------------------------------------------------
-FIG_W_IN, FIG_H_IN = 10.0, 14.0  # portrait
-DPI = 200
+# LAYOUT              "portrait"  tall chart, current production default
+#                     "landscape" wide chart, matches Waveshare 800×480 ratio (5:3)
+# INFO_PANEL_FRAC     fraction of figure width for the left info/sidebar panel
+# VIEW_SEAWARD_RANGE_NM  seaward depth from The Palms, nautical miles
+#                     scales the entire chart uniformly (along-shore and seaward)
+# COAST_FRAC_FROM_LEFT   fraction of x-span behind the reference (land context)
+#                     0.21 = 21 % land, 79 % ocean; Sprint 2 value (was 0.28)
+LAYOUT                = "portrait"   # "portrait" | "landscape"
+INFO_PANEL_FRAC       = 0.25
+VIEW_SEAWARD_RANGE_NM = float(os.environ.get("HARBOR_VIEW_SEAWARD_RANGE_NM", "8.0"))
+COAST_FRAC_FROM_LEFT  = 0.21
 
-SIDEBAR_FRAC = 0.25
-MARGIN_FRAC = 0.018
+# Derived — do not edit below this line in the tuning block
+# portrait : 10×14 in → 2000×2800 px at DPI 200
+# landscape: 10×6 in  → 2000×1200 px at DPI 200  (5:3, matches Waveshare 800×480)
+FIG_W_IN, FIG_H_IN = (10.0, 14.0) if LAYOUT == "portrait" else (10.0, 6.0)
+DPI          = 200
+SIDEBAR_FRAC = INFO_PANEL_FRAC   # alias — render_hybrid imports this name
+MARGIN_FRAC  = 0.018
 
 
 def build_layout():
@@ -110,21 +125,9 @@ def build_layout():
 # ---------------------------------------------------------------------------
 # Map geography
 # ---------------------------------------------------------------------------
-# VIEW_SEAWARD_RANGE_NM is the single end-user tuning knob.  Changing it
-# uniformly scales the entire chart: more seaward depth, more along-shore
-# context, and more land behind the reference all grow proportionally.  The
-# viewport solver in harbor_view.chart.viewport derives everything else from
-# this value and the panel's physical aspect ratio.  Measured from the
-# reference location (The Palms), not from the shoreline.
-VIEW_SEAWARD_RANGE_NM = float(
-    os.environ.get("HARBOR_VIEW_SEAWARD_RANGE_NM", "8.0")
-)
-
-# COAST_FRAC_FROM_LEFT is an internal design constant, not user-facing.
-# It places the reference location (The Palms) at 21 % from the left edge
-# of the map panel — giving 21 % land/ICW context to the west and 79 %
-# ocean to the east.  Sprint 2 composition pass: 0.28 → 0.21.
-COAST_FRAC_FROM_LEFT = 0.21
+# VIEW_SEAWARD_RANGE_NM and COAST_FRAC_FROM_LEFT are defined in the tuning
+# block above.  solve_viewport() in harbor_view.chart.viewport derives all
+# geographic bounds from those two values and the map panel's aspect ratio.
 
 
 def compute_view_window(map_ax) -> tuple[float, float, float, float]:
