@@ -87,7 +87,7 @@ FONT_BODY = "DejaVu Sans"
 #                     0.21 = 21 % land, 79 % ocean; Sprint 2 value (was 0.28)
 LAYOUT                = "landscape"  # "portrait" | "landscape"
 INFO_PANEL_FRAC       = 0.25
-VIEW_SEAWARD_RANGE_NM = float(os.environ.get("HARBOR_VIEW_SEAWARD_RANGE_NM", "8.0"))
+VIEW_SEAWARD_RANGE_NM = float(os.environ.get("HARBOR_VIEW_SEAWARD_RANGE_NM", "12.0"))
 COAST_FRAC_FROM_LEFT  = 0.21
 
 # Derived — do not edit below this line in the tuning block
