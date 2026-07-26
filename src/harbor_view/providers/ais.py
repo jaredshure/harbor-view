@@ -140,68 +140,39 @@ class _PartialVessel:
     last_seen_unix: float = field(default_factory=time.time)
 
     def is_drawable(self) -> bool:
-        """A vessel is drawable once it has a position, a name, and an
-        AIS type code we know how to map to a `VesselType`. Anything
-        less and Harbor View has nowhere to put it on the chart or no
-        glyph to draw -- per the brief, incomplete records are dropped
-        rather than guessed at.
+        """A vessel is drawable if it has a valid, in-range position.
 
-        Heading is treated as an optional rendering attribute. When
-        unavailable, Harbor View renders the vessel with a default
-        orientation rather than suppressing it entirely, because many
-        legitimate AIS targets (especially anchored commercial vessels)
-        report heading as unavailable.
+        AIS type mapping and name are not required: unmapped types render
+        with the UNKNOWN diamond glyph, and the MMSI is used as a fallback
+        name when no ShipStaticData has arrived yet.  The only hard
+        rejection is a missing or impossible position — there is nowhere to
+        plot a vessel without one.
         """
         if self.latitude is None or self.longitude is None:
             return False
-        if not self.name or not self.name.strip():
+        if not (-90.0 <= self.latitude <= 90.0):
             return False
-        return vessel_type_for_ais_code(self.ais_type_code) is not None
+        if not (-180.0 <= self.longitude <= 180.0):
+            return False
+        return True
 
-    def is_drawable_dev(self) -> bool:
-        """Development-mode drawability: any vessel with a valid position
-        is renderable.  AIS type and name are not required -- unmapped
-        types use the UNKNOWN glyph and the MMSI is used as a fallback name.
-        """
-        return self.latitude is not None and self.longitude is not None
+    def to_vessel(self) -> Vessel:
+        """Convert to a Vessel ready for the renderer.
 
-    def to_vessel_dev(self) -> Vessel:
-        """Convert to Vessel for development-mode rendering.
-
-        Unknown/missing/unmapped AIS types become VesselType.UNKNOWN so they
-        render with the generic diamond glyph rather than being silently
-        dropped.  Falls back to the MMSI string as the vessel name when no
-        ShipStaticData name has been received.
+        Mapped AIS types keep their Harbor View classification.  Unmapped
+        or missing types fall back to VesselType.UNKNOWN (the diamond glyph)
+        rather than being dropped.  The raw AIS type code is preserved in
+        the Vessel for debug logging and future filtering.  Name falls back
+        to the MMSI string when no ShipStaticData has arrived.
         """
         vessel_type = vessel_type_for_ais_code(self.ais_type_code) or VesselType.UNKNOWN
         status = _nav_status_to_vessel_status(self.nav_status_code)
+        # AIS pads free-text fields with "@" to a fixed width at the protocol
+        # level; AISStream's JSON decoding sometimes leaves these in.
         destination = (self.destination or "").strip().rstrip("@").strip()
         name = (self.name or "").strip() or self.mmsi
         return Vessel(
             name=name,
-            vessel_type=vessel_type,
-            latitude=self.latitude,
-            longitude=self.longitude,
-            heading_deg=self.heading_deg if self.heading_deg is not None else 0.0,
-            origin="",
-            destination=destination,
-            mmsi=self.mmsi,
-            speed_kn=self.speed_kn,
-            status=status,
-        )
-
-    def to_vessel(self) -> Vessel:
-        vessel_type = vessel_type_for_ais_code(self.ais_type_code)
-        assert vessel_type is not None  # guaranteed by is_drawable()
-        status = _nav_status_to_vessel_status(self.nav_status_code)
-        destination = (self.destination or "").strip()
-        # AIS pads free-text fields with "@" characters to a fixed
-        # width at the protocol level; AISStream's JSON decoding
-        # sometimes leaves these in. Strip trailing padding so
-        # "NASSAU@@@@@@@" doesn't render literally.
-        destination = destination.rstrip("@").strip()
-        return Vessel(
-            name=self.name.strip(),
             vessel_type=vessel_type,
             latitude=self.latitude,
             longitude=self.longitude,
@@ -211,6 +182,7 @@ class _PartialVessel:
             mmsi=self.mmsi,
             speed_kn=self.speed_kn,
             status=status,
+            ais_type_code=self.ais_type_code,
         )
 
 
@@ -269,7 +241,6 @@ class AISProvider(VesselProvider):
         bounding_box: tuple[tuple[float, float], tuple[float, float]] | None = None,
         listen_seconds: float | None = None,
         stale_seconds: float | None = None,
-        filter_mode: str | None = None,
     ) -> None:
         # Explicit constructor args are supported for tests and for
         # callers that already have configuration in hand; the normal
@@ -305,18 +276,6 @@ class AISProvider(VesselProvider):
         # get_vessels() calls for the lifetime of this provider instance.
         self._cache: dict[str, _PartialVessel] = {}
         self._messages_this_cycle: dict[str, int] = {}
-        # "development" renders all positioned vessels; None/anything else
-        # is the default restrictive production filter.
-        _raw_mode = filter_mode if filter_mode is not None else os.environ.get("HARBOR_VIEW_FILTER_MODE")
-        if _raw_mode and _raw_mode != "development":
-            logger.warning(
-                "HARBOR_VIEW_FILTER_MODE=%r is not a recognized value "
-                "(the only supported value is \"development\"); "
-                "falling back to production mode.",
-                _raw_mode,
-            )
-            _raw_mode = None
-        self._filter_mode: str | None = _raw_mode or None
 
     def get_vessels(self) -> list[Vessel]:
         if not self._api_key:
@@ -368,11 +327,7 @@ class AISProvider(VesselProvider):
         has_both = has_position & has_static
         new_positions = has_position - pre_position
         new_static = has_static - pre_static
-        if self._filter_mode == "development":
-            vessels = [p.to_vessel_dev() for p in self._cache.values()
-                       if p.is_drawable_dev()]
-        else:
-            vessels = [p.to_vessel() for p in self._cache.values() if p.is_drawable()]
+        vessels = [p.to_vessel() for p in self._cache.values() if p.is_drawable()]
         logger.info(
             "AISProvider cache: total=%d  position=%d  static=%d  both=%d  "
             "drawable=%d  new_position=%d  new_static=%d  evicted=%d",
@@ -385,54 +340,35 @@ class AISProvider(VesselProvider):
             len(new_static),
             len(stale_mmsis),
         )
-        # Sprint 6.1 diagnostic: for every vessel with both position and
-        # static data, log drawable status and the specific failure reason.
-        # Investigation only -- does not change behavior or the returned list.
-        if has_both:
-            reject_counts: dict[str, int] = {
-                "unmapped vessel type": 0,
-                "missing name": 0,
-                "other": 0,
-            }
-            for mmsi in sorted(has_both):
-                p = self._cache[mmsi]
-                mapped_type = vessel_type_for_ais_code(p.ais_type_code)
-                drawable = p.is_drawable()
-                reason: str | None = None
-                if not drawable:
-                    if not p.name or not p.name.strip():
-                        reason = "missing name"
-                    elif mapped_type is None:
-                        reason = "unmapped vessel type"
-                    else:
-                        reason = "other"
-                    reject_counts[reason] += 1
-                hv_type_str = mapped_type.value.upper() if mapped_type is not None else "none"
-                logger.info(
-                    "  MMSI=%-12s  name=%-28s  lat=%8.4f  lon=%9.4f  "
-                    "heading=%-8s  ais_type=%-4s  hv_type=%-8s  drawable=%s%s",
-                    mmsi,
-                    repr(p.name),
-                    p.latitude,
-                    p.longitude,
-                    str(p.heading_deg) if p.heading_deg is not None else "none",
-                    str(p.ais_type_code),
-                    hv_type_str,
-                    "yes" if drawable else "no",
-                    f"  reason={reason}" if reason else "",
-                )
-            logger.info(
-                "Rejection summary (both=true, drawable=false):\n"
-                "  %-30s  %s\n"
-                "  %s\n"
-                "  %-30s  %d\n"
-                "  %-30s  %d\n"
-                "  %-30s  %d",
-                "Reason", "Count",
-                "-" * 40,
-                "unmapped vessel type", reject_counts["unmapped vessel type"],
-                "missing name", reject_counts["missing name"],
-                "other", reject_counts["other"],
+        # Per-vessel diagnostic log for every vessel that has been seen at all.
+        # Logs AIS type, effective Harbor View type, and drawable reason so
+        # live testing can distinguish mapped types from UNKNOWN fallbacks.
+        for mmsi in sorted(self._cache):
+            p = self._cache[mmsi]
+            if p.latitude is None:
+                continue  # position-less entries are not interesting for this log
+            mapped_type = vessel_type_for_ais_code(p.ais_type_code)
+            hv_type = mapped_type or (VesselType.UNKNOWN if p.ais_type_code is not None else None)
+            drawable = p.is_drawable()
+            if drawable and mapped_type is None and p.ais_type_code is not None:
+                reason = "unknown ais type — rendered as UNKNOWN"
+            elif not drawable:
+                reason = "invalid or missing position"
+            else:
+                reason = ""
+            hv_type_str = hv_type.value.upper() if hv_type is not None else "none"
+            logger.debug(
+                "  MMSI=%-12s  name=%-28s  lat=%8.4f  lon=%9.4f  "
+                "heading=%-8s  ais_type=%-4s  hv_type=%-8s  drawable=%s%s",
+                mmsi,
+                repr(p.name),
+                p.latitude,
+                p.longitude,
+                str(p.heading_deg) if p.heading_deg is not None else "none",
+                str(p.ais_type_code) if p.ais_type_code is not None else "none",
+                hv_type_str,
+                "yes" if drawable else "no",
+                f"  reason={reason}" if reason else "",
             )
 
         if os.environ.get("HARBOR_VIEW_DEBUG_AIS"):
@@ -530,9 +466,7 @@ class AISProvider(VesselProvider):
         )
         sep = "-" * len(header)
 
-        mode_label = "DEVELOPMENT" if self._filter_mode == "development" else "PRODUCTION"
         print()
-        print(f"Filter mode: {mode_label}")
         print("=" * len(header))
         print("HARBOR VIEW — AIS DEBUG RECONCILIATION TABLE")
         print("=" * len(header))
@@ -542,8 +476,7 @@ class AISProvider(VesselProvider):
         for mmsi in sorted(self._cache):
             p = self._cache[mmsi]
             age_s = now - p.last_seen_unix
-            has_pos = p.latitude is not None and p.longitude is not None
-            has_name = bool(p.name and p.name.strip())
+            has_pos = p.is_drawable()
             hv_type = vessel_type_for_ais_code(p.ais_type_code)
 
             if has_pos:
@@ -564,40 +497,22 @@ class AISProvider(VesselProvider):
 
             rendered = False
             reason = ""
-            if self._filter_mode == "development":
-                # Dev mode mirrors is_drawable_dev(): position is the only
-                # requirement; missing name and unmapped type are not
-                # disqualifying (MMSI fallback name, UNKNOWN glyph).
-                if not has_pos:
-                    reason = "missing position"
-                    n_filtered += 1
-                elif not in_vp:
-                    dirs, dist_m = _outside_info(x, y)
-                    reason = f"outside viewport [{dirs}, {dist_m:.0f} m]"
-                    n_outside_vp += 1
-                else:
-                    rendered = True
-                    n_rendered += 1
+            if not has_pos:
+                reason = "missing/invalid position"
+                n_filtered += 1
+            elif not in_vp:
+                dirs, dist_m = _outside_info(x, y)
+                reason = f"outside viewport [{dirs}, {dist_m:.0f} m]"
+                n_outside_vp += 1
             else:
-                if not has_pos:
-                    reason = "missing position"
-                    n_filtered += 1
-                elif not has_name:
-                    reason = "missing name"
-                    n_filtered += 1
-                elif hv_type is None:
-                    reason = f"unsupported type ({p.ais_type_code})"
-                    n_filtered += 1
-                elif not in_vp:
-                    dirs, dist_m = _outside_info(x, y)
-                    reason = f"outside viewport [{dirs}, {dist_m:.0f} m]"
-                    n_outside_vp += 1
-                else:
-                    rendered = True
-                    n_rendered += 1
+                rendered = True
+                if hv_type is None and p.ais_type_code is not None:
+                    reason = f"ais_type={p.ais_type_code} unmapped — rendered as UNKNOWN"
+                n_rendered += 1
 
             ais_str = str(p.ais_type_code) if p.ais_type_code is not None else "—"
-            hv_str = hv_type.value.upper() if hv_type else "none"
+            effective_hv = hv_type or (VesselType.UNKNOWN if p.ais_type_code is not None else None)
+            hv_str = effective_hv.value.upper() if effective_hv else "none"
             lat_str = f"{p.latitude:.4f}" if has_pos else "—"
             lon_str = f"{p.longitude:.4f}" if has_pos else "—"
             hdg_str = f"{p.heading_deg:.0f}" if p.heading_deg is not None else "—"
@@ -630,7 +545,7 @@ class AISProvider(VesselProvider):
         print(f"  Unique vessels in cache (post-eviction): {len(self._cache)}")
         print(f"  Vessels inside viewport                : {n_in_vp_any}")
         print(f"  Vessels rendered                       : {n_rendered}")
-        print(f"  Vessels filtered (missing data/type)   : {n_filtered}")
+        print(f"  Vessels filtered (missing/invalid pos) : {n_filtered}")
         print(f"  Vessels outside viewport               : {n_outside_vp}")
         print()
         print("=" * len(header))

@@ -15,7 +15,11 @@ from __future__ import annotations
 import os
 import tempfile
 
-from harbor_view.chart.render import render
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+
+from harbor_view.chart.render import draw_fleet, draw_vessel, render, MAP_ORIENTATION
 from harbor_view.providers.base import VesselProvider
 from harbor_view.providers.models import Vessel, VesselType
 from harbor_view.providers.placeholder import PlaceholderProvider
@@ -142,3 +146,147 @@ def test_render_with_ais_provider_matches_placeholder_layout_when_empty(monkeypa
         a[500:750, 0:500] = 0
         b[500:750, 0:500] = 0
         assert np.array_equal(a, b)
+
+
+# ---------------------------------------------------------------------------
+# Label rendering tests
+# ---------------------------------------------------------------------------
+
+def _make_map_ax():
+    """Create a minimal map axes with viewport limits matching the active
+    MAP_ORIENTATION, large enough to contain vessels at the reference
+    coordinates used by the label tests (≈ 26.1°N, 80.1°W).
+    """
+    fig = plt.figure(figsize=(10, 6))
+    ax = fig.add_axes([0.25, 0.05, 0.72, 0.93])
+    if MAP_ORIENTATION == "seaward_up":
+        # xlim = along-shore range (y_local), reversed (north-left)
+        # ylim = seaward range (x_local)
+        ax.set_xlim(15000, -15000)
+        ax.set_ylim(-2000, 15000)
+    else:
+        ax.set_xlim(-3000, 15000)
+        ax.set_ylim(-15000, 15000)
+    return fig, ax
+
+
+def test_draw_vessel_returns_name_text_with_vessel_name():
+    """draw_vessel must return a Text object whose content is the vessel name."""
+    fig, ax = _make_map_ax()
+    try:
+        vessel = Vessel("LONE FREIGHTER", VesselType.CARGO, 26.10, -80.10, 90)
+        name_text, dest_anchor = draw_vessel(ax, vessel)
+        assert name_text.get_text() == "LONE FREIGHTER"
+        assert len(dest_anchor) == 4   # (dest_px, dest_py, dest_ha, style)
+    finally:
+        plt.close(fig)
+
+
+def test_draw_fleet_name_always_appears():
+    """Vessel names must always appear in the axes, regardless of destination."""
+    fig, ax = _make_map_ax()
+    try:
+        vessels = [
+            Vessel("SHIP WITH DEST",    VesselType.CARGO,   26.10, -80.10, 90, destination="MIAMI"),
+            Vessel("SHIP WITHOUT DEST", VesselType.TANKER,  26.12, -80.08, 180, destination=""),
+        ]
+        draw_fleet(ax, vessels)
+        text_strings = {t.get_text() for t in ax.texts}
+        assert "SHIP WITH DEST"    in text_strings
+        assert "SHIP WITHOUT DEST" in text_strings
+    finally:
+        plt.close(fig)
+
+
+def test_draw_fleet_destination_drawn_when_present():
+    """When a vessel has a non-empty destination and space permits, the
+    destination text must appear in the axes.
+    """
+    fig, ax = _make_map_ax()
+    try:
+        vessel = Vessel("LONE SHIP", VesselType.CARGO, 26.10, -80.10, 90, destination="NASSAU")
+        draw_fleet(ax, [vessel])
+        text_strings = {t.get_text() for t in ax.texts}
+        assert "LONE SHIP" in text_strings
+        assert "NASSAU" in text_strings
+    finally:
+        plt.close(fig)
+
+
+def test_draw_fleet_destination_omitted_when_empty():
+    """An empty destination string must not produce a destination text object."""
+    fig, ax = _make_map_ax()
+    try:
+        vessel = Vessel("LONE SHIP", VesselType.CARGO, 26.10, -80.10, 90, destination="")
+        draw_fleet(ax, [vessel])
+        text_strings = [t.get_text() for t in ax.texts]
+        assert "LONE SHIP" in text_strings
+        # The only text in the axes should be the vessel name; no empty or
+        # empty-destination text object should be added.
+        assert all(t != "" for t in text_strings)
+    finally:
+        plt.close(fig)
+
+
+def test_draw_fleet_unknown_vessel_type_renders_without_error():
+    """VesselType.UNKNOWN (AIS vessels with no mapped type) must render
+    without raising -- the diamond glyph exists for this case.
+    """
+    fig, ax = _make_map_ax()
+    try:
+        vessel = Vessel("MYSTERY", VesselType.UNKNOWN, 26.10, -80.10, 90, destination="PORT EVG")
+        draw_fleet(ax, [vessel])
+        text_strings = {t.get_text() for t in ax.texts}
+        assert "MYSTERY" in text_strings
+    finally:
+        plt.close(fig)
+
+
+def test_draw_fleet_two_overlapping_vessels_no_crash():
+    """Two vessels at nearly the same position with destinations must render
+    without raising -- the collision logic must suppress rather than error.
+    """
+    fig, ax = _make_map_ax()
+    try:
+        vessels = [
+            Vessel("VESSEL A", VesselType.CARGO,  26.10, -80.10, 90,  destination="MIAMI"),
+            Vessel("VESSEL B", VesselType.TANKER, 26.101, -80.101, 90, destination="NASSAU"),
+        ]
+        draw_fleet(ax, vessels)
+        text_strings = {t.get_text() for t in ax.texts}
+        # Both names must always appear regardless of collision outcome.
+        assert "VESSEL A" in text_strings
+        assert "VESSEL B" in text_strings
+    finally:
+        plt.close(fig)
+
+
+def test_render_with_vessel_with_destination_completes():
+    """Full render pipeline with a vessel that has a destination must
+    produce a valid PNG without raising.
+    """
+    class _DestProvider(VesselProvider):
+        def get_vessels(self):
+            return [Vessel("PORT RUNNER", VesselType.CARGO, 26.10, -80.09, 90,
+                           destination="PORT EVG")]
+
+    with tempfile.TemporaryDirectory() as tmp:
+        out = os.path.join(tmp, "dest.png")
+        render(output_path=out, vessel_provider=_DestProvider())
+        assert os.path.exists(out)
+        assert os.path.getsize(out) > 0
+
+
+def test_render_with_unknown_vessel_type_completes():
+    """Full render pipeline with a VesselType.UNKNOWN vessel must
+    produce a valid PNG -- this is the live-AIS unmapped-type case.
+    """
+    class _UnknownProvider(VesselProvider):
+        def get_vessels(self):
+            return [Vessel("AIS TARGET 1", VesselType.UNKNOWN, 26.10, -80.09, 0)]
+
+    with tempfile.TemporaryDirectory() as tmp:
+        out = os.path.join(tmp, "unknown.png")
+        render(output_path=out, vessel_provider=_UnknownProvider())
+        assert os.path.exists(out)
+        assert os.path.getsize(out) > 0

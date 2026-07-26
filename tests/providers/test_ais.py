@@ -31,18 +31,6 @@ def test_ais_provider_is_a_vessel_provider():
     assert isinstance(AISProvider(api_key="x"), VesselProvider)
 
 
-def test_invalid_filter_mode_falls_back_to_production(monkeypatch, caplog):
-    """An unrecognized HARBOR_VIEW_FILTER_MODE value must log a warning
-    and fall back to production mode rather than silently misbehaving.
-    """
-    import logging
-    monkeypatch.setenv("HARBOR_VIEW_FILTER_MODE", "foobar")
-    with caplog.at_level(logging.WARNING, logger="harbor_view.providers.ais"):
-        provider = AISProvider(api_key="x")
-    assert provider._filter_mode is None
-    assert "foobar" in caplog.text
-    assert "falling back to production mode" in caplog.text
-
 
 def test_no_api_key_returns_empty_list_without_connecting(monkeypatch):
     monkeypatch.delenv("AISSTREAM_API_KEY", raising=False)
@@ -168,7 +156,7 @@ def _provider():
     return AISProvider(api_key="x", bounding_box=((25.85, -80.30), (26.45, -79.85)))
 
 
-def test_position_report_alone_is_not_drawable():
+def test_position_report_alone_is_drawable():
     provider = _provider()
     partials = {}
     provider._handle_message(_POSITION_REPORT, partials)
@@ -177,8 +165,8 @@ def test_position_report_alone_is_not_drawable():
     assert partial.latitude == 26.10
     assert partial.heading_deg == 205
     assert partial.speed_kn == 12.3
-    # No Type code yet (that comes from ShipStaticData) -> not drawable.
-    assert partial.is_drawable() is False
+    # Valid position is sufficient — no type code required.
+    assert partial.is_drawable() is True
 
 
 def test_merging_position_and_static_data_becomes_drawable():
@@ -217,11 +205,10 @@ def test_order_independent_merging():
     assert partials["367719770"].is_drawable() is True
 
 
-def test_message_with_unmapped_vessel_type_never_becomes_drawable():
-    """A fishing boat (Type 30) has a real position and a real name
-    but no Harbor View glyph -- it must never be returned as drawable,
-    confirming the AIS-types mapping is actually enforced here, not
-    just defined in isolation.
+def test_message_with_unmapped_vessel_type_renders_as_unknown():
+    """A fishing boat (Type 30) has a real position but no Harbor View
+    glyph mapping.  With the simplified filtering, it is drawable and
+    rendered as VesselType.UNKNOWN rather than being dropped.
     """
     static_data = json.dumps({
         "MessageType": "ShipStaticData",
@@ -237,7 +224,11 @@ def test_message_with_unmapped_vessel_type_never_becomes_drawable():
     partials = {}
     provider._handle_message(static_data, partials)
     provider._handle_message(position, partials)
-    assert partials["999999999"].is_drawable() is False
+    p = partials["999999999"]
+    assert p.is_drawable() is True
+    vessel = p.to_vessel()
+    assert vessel.vessel_type is VesselType.UNKNOWN
+    assert vessel.ais_type_code == 30
 
 
 def test_malformed_json_is_ignored_not_raised():
@@ -581,106 +572,7 @@ def test_drawable_when_heading_and_cog_both_unavailable():
 
 
 # ---------------------------------------------------------------------------
-# Development filter mode (HARBOR_VIEW_FILTER_MODE=development)
-# ---------------------------------------------------------------------------
-
-def _dev_provider():
-    return AISProvider(
-        api_key="x",
-        bounding_box=((25.85, -80.30), (26.45, -79.85)),
-        filter_mode="development",
-    )
-
-
-def test_dev_mode_unknown_ais_type_is_rendered(monkeypatch):
-    """In development mode, a vessel with an AIS type that has no Harbor
-    View mapping (e.g. type 30, fishing) must appear in get_vessels()
-    output as VesselType.UNKNOWN rather than being dropped.
-    """
-    provider = _dev_provider()
-    fishing_pos = json.dumps({
-        "MessageType": "PositionReport",
-        "MetaData": {"MMSI": 111222333, "ShipName": "FISHY", "latitude": 26.1, "longitude": -80.1},
-        "Message": {"PositionReport": {"TrueHeading": 90, "Cog": 90, "Sog": 4.0, "NavigationalStatus": 0}},
-    })
-    fishing_static = json.dumps({
-        "MessageType": "ShipStaticData",
-        "MetaData": {"MMSI": 111222333, "ShipName": "FISHY", "latitude": 26.1, "longitude": -80.1},
-        "Message": {"ShipStaticData": {"Name": "FISHY", "Type": 30, "Destination": ""}},
-    })
-
-    async def window(cache):
-        provider._handle_message(fishing_pos, cache)
-        provider._handle_message(fishing_static, cache)
-
-    monkeypatch.setattr(provider, "_collect", window)
-    vessels = provider.get_vessels()
-    assert len(vessels) == 1
-    assert vessels[0].vessel_type is VesselType.UNKNOWN
-    assert vessels[0].name == "FISHY"
-
-
-def test_dev_mode_missing_ais_type_is_rendered(monkeypatch):
-    """In development mode, a vessel that has only a PositionReport
-    (no ShipStaticData, ais_type_code=None) must still appear in
-    get_vessels() output as VesselType.UNKNOWN.
-    """
-    provider = _dev_provider()
-
-    async def window(cache):
-        provider._handle_message(_POSITION_REPORT, cache)  # no ShipStaticData
-
-    monkeypatch.setattr(provider, "_collect", window)
-    vessels = provider.get_vessels()
-    assert len(vessels) == 1
-    assert vessels[0].vessel_type is VesselType.UNKNOWN
-
-
-def test_production_mode_unknown_ais_type_is_filtered(monkeypatch):
-    """In production mode (the default), a vessel with no mapped AIS type
-    must be absent from get_vessels() even in development mode is NOT active.
-    Contrasts directly with test_dev_mode_unknown_ais_type_is_rendered.
-    """
-    provider = _provider()  # production mode; no filter_mode argument
-    fishing_pos = json.dumps({
-        "MessageType": "PositionReport",
-        "MetaData": {"MMSI": 111222333, "ShipName": "FISHY", "latitude": 26.1, "longitude": -80.1},
-        "Message": {"PositionReport": {"TrueHeading": 90, "Cog": 90, "Sog": 4.0, "NavigationalStatus": 0}},
-    })
-    fishing_static = json.dumps({
-        "MessageType": "ShipStaticData",
-        "MetaData": {"MMSI": 111222333, "ShipName": "FISHY", "latitude": 26.1, "longitude": -80.1},
-        "Message": {"ShipStaticData": {"Name": "FISHY", "Type": 30, "Destination": ""}},
-    })
-
-    async def window(cache):
-        provider._handle_message(fishing_pos, cache)
-        provider._handle_message(fishing_static, cache)
-
-    monkeypatch.setattr(provider, "_collect", window)
-    vessels = provider.get_vessels()
-    assert vessels == []
-
-
-def test_dev_mode_known_type_uses_correct_symbol(monkeypatch):
-    """In development mode, a vessel with a recognized AIS type must
-    still use that type's symbol -- VesselType.UNKNOWN must not
-    override a vessel that has a valid mapping.
-    """
-    provider = _dev_provider()
-
-    async def window(cache):
-        provider._handle_message(_POSITION_REPORT, cache)
-        provider._handle_message(_SHIP_STATIC_DATA, cache)  # Type=70 -> CARGO
-
-    monkeypatch.setattr(provider, "_collect", window)
-    vessels = provider.get_vessels()
-    assert len(vessels) == 1
-    assert vessels[0].vessel_type is VesselType.CARGO  # not UNKNOWN
-
-
-# ---------------------------------------------------------------------------
-# Debug table mode-awareness
+# Simplified filtering — position-validity-based, no type gating
 # ---------------------------------------------------------------------------
 
 def _make_in_viewport_partial(mmsi: str, ais_type_code: int | None = 30):
@@ -698,66 +590,83 @@ def _make_in_viewport_partial(mmsi: str, ais_type_code: int | None = 30):
     return p
 
 
-def test_debug_table_dev_mode_unmapped_vessel_is_rendered(capsys):
-    """In development mode, an unmapped vessel (type 30, fishing) with a
-    valid in-viewport position must show Rndr=YES and be counted in
-    'Vessels rendered', not 'Vessels filtered'.
-    """
-    provider = _dev_provider()
-    provider._cache["111000001"] = _make_in_viewport_partial("111000001", ais_type_code=30)
-    provider._print_debug_table()
-    out = capsys.readouterr().out
-
-    assert "YES " in out                                        # row-level Rndr column
-    assert "Vessels rendered                       : 1" in out
-    assert "Vessels filtered (missing data/type)   : 0" in out
-
-
-def test_debug_table_production_mode_unmapped_vessel_is_filtered(capsys):
-    """In production mode, the same unmapped vessel must show Rndr=NO
-    and be counted in 'Vessels filtered', not 'Vessels rendered'.
+def test_mapped_vessel_preserves_type_and_ais_code(monkeypatch):
+    """A vessel with a mapped AIS type (70=cargo) must appear in
+    get_vessels() as VesselType.CARGO and preserve the raw ais_type_code.
     """
     provider = _provider()
-    provider._cache["111000001"] = _make_in_viewport_partial("111000001", ais_type_code=30)
-    provider._print_debug_table()
-    out = capsys.readouterr().out
 
-    assert "NO  " in out                                        # row-level Rndr column
-    assert "Vessels rendered                       : 0" in out
-    assert "Vessels filtered (missing data/type)   : 1" in out
+    async def window(cache):
+        provider._handle_message(_POSITION_REPORT, cache)
+        provider._handle_message(_SHIP_STATIC_DATA, cache)  # Type=70
+
+    monkeypatch.setattr(provider, "_collect", window)
+    vessels = provider.get_vessels()
+    assert len(vessels) == 1
+    v = vessels[0]
+    assert v.vessel_type is VesselType.CARGO
+    assert v.ais_type_code == 70
 
 
-def test_debug_table_counts_reflect_mode(capsys):
-    """With one in-viewport vessel of unmapped type and one of known type
-    (cargo), dev mode must count both as rendered while production mode
-    counts only the cargo vessel as rendered and the fishing vessel as
-    filtered.
+def test_unmapped_vessel_type_renders_as_unknown(monkeypatch):
+    """A vessel with an unmapped AIS type (37=pleasure craft) must appear
+    in get_vessels() as VesselType.UNKNOWN with ais_type_code preserved.
     """
-    fishing = _make_in_viewport_partial("111000001", ais_type_code=30)
-    cargo = _make_in_viewport_partial("111000002", ais_type_code=70)
-    cargo.name = "FREIGHTER"
+    provider = _provider()
+    pleasure_pos = json.dumps({
+        "MessageType": "PositionReport",
+        "MetaData": {"MMSI": 111222333, "ShipName": "JOLLY", "latitude": 26.1, "longitude": -80.1},
+        "Message": {"PositionReport": {"TrueHeading": 90, "Cog": 90, "Sog": 4.0, "NavigationalStatus": 0}},
+    })
+    pleasure_static = json.dumps({
+        "MessageType": "ShipStaticData",
+        "MetaData": {"MMSI": 111222333, "ShipName": "JOLLY", "latitude": 26.1, "longitude": -80.1},
+        "Message": {"ShipStaticData": {"Name": "JOLLY", "Type": 37, "Destination": ""}},
+    })
 
-    dev = _dev_provider()
-    dev._cache["111000001"] = fishing
-    dev._cache["111000002"] = cargo
-    dev._print_debug_table()
-    dev_out = capsys.readouterr().out
-    assert "Vessels rendered                       : 2" in dev_out
-    assert "Vessels filtered (missing data/type)   : 0" in dev_out
+    async def window(cache):
+        provider._handle_message(pleasure_pos, cache)
+        provider._handle_message(pleasure_static, cache)
 
-    prod = _provider()
-    prod._cache["111000001"] = fishing
-    prod._cache["111000002"] = cargo
-    prod._print_debug_table()
-    prod_out = capsys.readouterr().out
-    assert "Vessels rendered                       : 1" in prod_out
-    assert "Vessels filtered (missing data/type)   : 1" in prod_out
+    monkeypatch.setattr(provider, "_collect", window)
+    vessels = provider.get_vessels()
+    assert len(vessels) == 1
+    v = vessels[0]
+    assert v.vessel_type is VesselType.UNKNOWN
+    assert v.ais_type_code == 37
+    assert v.name == "JOLLY"
 
 
-def test_unmapped_vessel_type_never_enters_drawable_pool(monkeypatch):
-    """Fishing/pleasure/sailing vessels (no Harbor View glyph) must
-    never appear in get_vessels() output even after accumulating a
-    complete record in the cache across multiple calls.
+def test_invalid_coordinates_are_not_drawable():
+    """A vessel with an impossible latitude (>90) must fail is_drawable()
+    even if all other fields are populated.
+    """
+    p = _PartialVessel(mmsi="123456789")
+    p.latitude = 91.0   # impossible
+    p.longitude = -80.1
+    p.ais_type_code = 70
+    assert p.is_drawable() is False
+
+
+def test_missing_position_excluded_from_get_vessels(monkeypatch):
+    """A vessel with ShipStaticData but no PositionReport must not appear
+    in get_vessels() output — no position means nowhere to plot it.
+    """
+    provider = _provider()
+
+    async def window(cache):
+        provider._handle_message(_SHIP_STATIC_DATA, cache)  # no position
+
+    monkeypatch.setattr(provider, "_collect", window)
+    vessels = provider.get_vessels()
+    assert vessels == []
+    assert "367719770" in provider._cache
+    assert provider._cache["367719770"].is_drawable() is False
+
+
+def test_unmapped_vessel_type_in_cache_is_drawable(monkeypatch):
+    """A vessel with position + unmapped AIS type must appear in
+    get_vessels() output — type filtering is no longer applied.
     """
     provider = _provider()
     fishing_position = json.dumps({
@@ -777,9 +686,36 @@ def test_unmapped_vessel_type_never_enters_drawable_pool(monkeypatch):
 
     monkeypatch.setattr(provider, "_collect", window)
     vessels = provider.get_vessels()
-    assert vessels == []
-    # The vessel is held in the cache (position + static data received)
-    # but is_drawable() must still return False because AIS type 30
-    # (fishing) has no Harbor View glyph.
-    assert "999999999" in provider._cache
-    assert provider._cache["999999999"].is_drawable() is False
+    assert len(vessels) == 1
+    assert vessels[0].vessel_type is VesselType.UNKNOWN
+    assert provider._cache["999999999"].is_drawable() is True
+
+
+def test_debug_table_unmapped_vessel_is_rendered(capsys):
+    """An unmapped vessel (type 30, fishing) with a valid in-viewport
+    position must show Rndr=YES and be counted in 'Vessels rendered'.
+    """
+    provider = _provider()
+    provider._cache["111000001"] = _make_in_viewport_partial("111000001", ais_type_code=30)
+    provider._print_debug_table()
+    out = capsys.readouterr().out
+
+    assert "YES " in out
+    assert "Vessels rendered                       : 1" in out
+    assert "Vessels filtered (missing/invalid pos) : 0" in out
+
+
+def test_debug_table_missing_position_is_filtered(capsys):
+    """A vessel with no position must show Rndr=NO and be counted in
+    'Vessels filtered (missing/invalid pos)'.
+    """
+    provider = _provider()
+    p = _PartialVessel(mmsi="111000002")
+    p.name = "NO POS"
+    p.ais_type_code = 70
+    provider._cache["111000002"] = p
+    provider._print_debug_table()
+    out = capsys.readouterr().out
+
+    assert "Vessels rendered                       : 0" in out
+    assert "Vessels filtered (missing/invalid pos) : 1" in out

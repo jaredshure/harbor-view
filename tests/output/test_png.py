@@ -172,8 +172,8 @@ def test_fit_exact_size_is_identity():
     assert result.size == (800, 480)
 
 
-def test_waveshare_backend_sends_rotated_image(monkeypatch):
-    """WaveshareBackend must rotate the fitted image 90° before getbuffer()."""
+def test_waveshare_backend_sends_unrotated_image(monkeypatch):
+    """WaveshareBackend passes _fit_to_display() output directly to getbuffer(), no rotation."""
     received = []
 
     class FakeEPD:
@@ -196,19 +196,22 @@ def test_waveshare_backend_sends_rotated_image(monkeypatch):
     monkeypatch.setitem(sys.modules, "waveshare_epd.epd7in5_V2", FakeModule())
 
     # A source image whose content makes rotation detectable: place a
-    # red pixel in the top-left corner.  After _fit_to_display() and
-    # rotate(90), that pixel should appear in the bottom-left corner.
+    # dark pixel in the top-left corner.  With no rotation, that pixel
+    # should remain in the top-left of the image sent to getbuffer().
     src = Image.new("RGB", (800, 480), color=(255, 255, 255))
-    src.putpixel((0, 0), (255, 0, 0))
+    src.putpixel((0, 0), (0, 0, 0))
 
     from harbor_view.output.waveshare import WaveshareBackend
     WaveshareBackend().write(src, "ignored.png")
 
     assert len(received) == 1
     sent = received[0].convert("RGB")
-    # After rotate(90 CCW), the original top-left moves to bottom-left.
-    assert sent.getpixel((0, sent.height - 1)) != (255, 255, 255), (
-        "Expected rotated content in bottom-left; image may not have been rotated"
+    # Without rotation the dark pixel stays at top-left; bottom-left is white canvas.
+    assert sent.getpixel((0, 0)) == (0, 0, 0), (
+        "Expected dark pixel at top-left; it may have been rotated away"
+    )
+    assert sent.getpixel((0, sent.height - 1)) == (255, 255, 255), (
+        "Expected white canvas at bottom-left; rotation may have been applied"
     )
 
 
