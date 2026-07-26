@@ -75,19 +75,23 @@ FONT_BODY = "DejaVu Sans"
 
 
 # ---------------------------------------------------------------------------
-# Tuning block — all four experimental knobs live here.
+# Tuning block — all five experimental knobs live here.
 # Change values in this block only; everything else is derived.
 # ---------------------------------------------------------------------------
-# LAYOUT              "portrait"  tall chart, current production default
-#                     "landscape" wide chart, matches Waveshare 800×480 ratio (5:3)
+# LAYOUT              "portrait"   tall chart, current production default
+#                     "landscape"  wide chart, matches Waveshare 800×480 ratio (5:3)
+# MAP_ORIENTATION     "north_up"   x=east, y=north (standard nautical chart)
+#                     "seaward_up" rotated 90° CCW: ocean up, coast along bottom,
+#                                  north=left, south/PE=right (balcony-facing view)
 # INFO_PANEL_FRAC     fraction of figure width for the left info/sidebar panel
 # VIEW_SEAWARD_RANGE_NM  seaward depth from The Palms, nautical miles
 #                     scales the entire chart uniformly (along-shore and seaward)
 # COAST_FRAC_FROM_LEFT   fraction of x-span behind the reference (land context)
 #                     0.21 = 21 % land, 79 % ocean; Sprint 2 value (was 0.28)
-LAYOUT                = "landscape"  # "portrait" | "landscape"
+LAYOUT                = "landscape"   # "portrait" | "landscape"
+MAP_ORIENTATION       = "seaward_up"  # "north_up" | "seaward_up"
 INFO_PANEL_FRAC       = 0.25
-VIEW_SEAWARD_RANGE_NM = float(os.environ.get("HARBOR_VIEW_SEAWARD_RANGE_NM", "12.0"))
+VIEW_SEAWARD_RANGE_NM = float(os.environ.get("HARBOR_VIEW_SEAWARD_RANGE_NM", "8.0"))
 COAST_FRAC_FROM_LEFT  = 0.21
 
 # Derived — do not edit below this line in the tuning block
@@ -97,6 +101,20 @@ FIG_W_IN, FIG_H_IN = (10.0, 14.0) if LAYOUT == "portrait" else (10.0, 6.0)
 DPI          = 200
 SIDEBAR_FRAC = INFO_PANEL_FRAC   # alias — render_hybrid imports this name
 MARGIN_FRAC  = 0.018
+
+
+def map_coords(x, y):
+    """Return (plot_x, plot_y) for the active MAP_ORIENTATION.
+
+    In north_up, local x (seaward) is the horizontal axis and local y
+    (along-shore) is vertical — identical to the geographic frame for an
+    east-facing site.  In seaward_up the axes are transposed: y_local
+    (along-shore) is horizontal and x_local (seaward) is vertical, so
+    ocean extends upward and the coastline runs along the bottom.
+    """
+    if MAP_ORIENTATION == "seaward_up":
+        return y, x
+    return x, y
 
 
 def build_layout():
@@ -162,64 +180,63 @@ def draw_basemap(map_ax, scene, x_min, x_max, y_min, y_max):
     mx, my = scene["mainland_shore"]
     is_open = scene["is_open"]
 
-    map_ax.set_xlim(x_min, x_max)
-    map_ax.set_ylim(y_min, y_max)
+    if MAP_ORIENTATION == "seaward_up":
+        # y_local (north-south) on horizontal axis: north=left, south=right.
+        # x_local (seaward) on vertical axis: inland=bottom, ocean=top.
+        map_ax.set_xlim(y_max, y_min)
+        map_ax.set_ylim(x_min, x_max)
+    else:
+        map_ax.set_xlim(x_min, x_max)
+        map_ax.set_ylim(y_min, y_max)
     map_ax.set_aspect("equal")
 
-    # --- Ocean base: coast-to-offshore depth gradient ---
-    # COLOR_OCEAN (lighter) near the barrier island shore, fading to
-    # COLOR_OCEAN_DEEP further offshore. Land polygons at higher z-orders
-    # cover the inland portion; only the ocean fraction is visible.
+    # --- Ocean base: depth gradient (shore→offshore) ---
     _ocean_cmap = mcolors.LinearSegmentedColormap.from_list(
         "ocean_depth", [COLOR_OCEAN, COLOR_OCEAN_DEEP]
     )
-    ocean_grad = np.linspace(0, 1, 400).reshape(1, -1)
+    if MAP_ORIENTATION == "seaward_up":
+        # gradient runs bottom (inland/shore) → top (offshore) as a column vector
+        ocean_grad = np.linspace(0, 1, 400).reshape(-1, 1)
+        grad_extent = [y_max, y_min, x_min, x_max]
+    else:
+        ocean_grad = np.linspace(0, 1, 400).reshape(1, -1)
+        grad_extent = [x_min, x_max, y_min, y_max]
     map_ax.imshow(
         ocean_grad,
-        extent=[x_min, x_max, y_min, y_max],
+        extent=grad_extent,
         aspect="auto",
         cmap=_ocean_cmap,
         origin="lower",
         zorder=0,
     )
 
-    # --- Mainland block: from the view's west edge out to mainland_shore.
-    # Because mx/my are pinned to exactly y_min..y_max, closing the
-    # polygon at (x_min, y_max) -> (x_min, y_min) gives a flush vertical
-    # edge with no ragged diagonal.
-    # mx/my run from y_min to y_max (pinned). Close the polygon by
-    # going up along the mainland curve, then straight back down the
-    # panel's west edge -- NOT by jumping corner-to-corner, which would
-    # cross the polygon diagonally and produce a bowtie fill.
+    # --- Mainland block ---
     land_x = np.concatenate([mx, [x_min, x_min]])
     land_y = np.concatenate([my, [y_max, y_min]])
-    map_ax.fill(land_x, land_y, facecolor=COLOR_LAND, edgecolor="none", zorder=1)
+    map_ax.fill(*map_coords(land_x, land_y), facecolor=COLOR_LAND, edgecolor="none", zorder=1)
 
-    # --- ICW water ribbon: between mainland_shore and icw_shore.
+    # --- ICW water ribbon ---
     icw_poly_x = np.concatenate([mx, ix[::-1]])
     icw_poly_y = np.concatenate([my, iy[::-1]])
-    map_ax.fill(icw_poly_x, icw_poly_y, facecolor=COLOR_ICW_WATER,
+    map_ax.fill(*map_coords(icw_poly_x, icw_poly_y), facecolor=COLOR_ICW_WATER,
                 edgecolor="none", zorder=2)
 
-    # --- Barrier island: between icw_shore and ocean_shore.
+    # --- Barrier island ---
     island_x = np.concatenate([ix, ox[::-1]])
     island_y = np.concatenate([iy, oy[::-1]])
-    map_ax.fill(island_x, island_y, facecolor=COLOR_LAND, edgecolor="none", zorder=2)
+    map_ax.fill(*map_coords(island_x, island_y), facecolor=COLOR_LAND, edgecolor="none", zorder=2)
 
-    # --- Inlet channel: built directly from ocean_shore/icw_shore at the
-    # gap rows (scene['inlet_channel_polygon']), so it is guaranteed to
-    # align with the island polygon above rather than risking drift from
-    # independently-chosen coordinates.
+    # --- Inlet channel ---
     chan_x, chan_y = scene["inlet_channel_polygon"]
     if len(chan_x):
-        map_ax.fill(chan_x, chan_y, facecolor=COLOR_ICW_WATER,
+        map_ax.fill(*map_coords(chan_x, chan_y), facecolor=COLOR_ICW_WATER,
                     edgecolor="none", zorder=3)
 
     # --- Shoreline strokes ---
-    map_ax.plot(ox, oy, color=COLOR_SHORE_LINE, lw=1.0, zorder=4, solid_joinstyle="round")
-    map_ax.plot(ix[~is_open], iy[~is_open], color=COLOR_SHORE_LINE, lw=0.8,
+    map_ax.plot(*map_coords(ox, oy), color=COLOR_SHORE_LINE, lw=1.0, zorder=4, solid_joinstyle="round")
+    map_ax.plot(*map_coords(ix[~is_open], iy[~is_open]), color=COLOR_SHORE_LINE, lw=0.8,
                 zorder=4, solid_joinstyle="round")
-    map_ax.plot(mx, my, color=COLOR_SHORE_LINE, lw=0.6, alpha=0.55, zorder=4)
+    map_ax.plot(*map_coords(mx, my), color=COLOR_SHORE_LINE, lw=0.6, alpha=0.55, zorder=4)
 
 
 def draw_depth_contours(map_ax, x_min, x_max, y_min, y_max, scene):
@@ -256,13 +273,19 @@ def draw_depth_contours(map_ax, x_min, x_max, y_min, y_max, scene):
         if not mask.any():
             continue
         alpha = max(0.12, 0.30 - i * 0.023)
-        map_ax.plot(cx[mask], cy[mask], color=COLOR_CONTOUR, lw=0.65,
+        map_ax.plot(*map_coords(cx[mask], cy[mask]), color=COLOR_CONTOUR, lw=0.65,
                     alpha=alpha, zorder=5)
-        # Depth label near the far-offshore (right) edge
+        # Depth label: near the far-offshore edge, spread along-shore.
+        # In seaward_up offshore is the top (high x_local) and along-shore
+        # is horizontal (y_local), so we swap the label coordinates.
         label_x = x_min + (x_max - x_min) * 0.95
         label_y = y_min + (y_max - y_min) * label_y_fracs[i]
+        if MAP_ORIENTATION == "seaward_up":
+            text_px, text_py = label_y, label_x
+        else:
+            text_px, text_py = label_x, label_y
         map_ax.text(
-            label_x, label_y, str(depth_ft),
+            text_px, text_py, str(depth_ft),
             ha="center", va="center",
             fontsize=5.5, color=COLOR_CONTOUR, alpha=0.60,
             fontstyle="italic", family=FONT_BODY, zorder=5,
@@ -287,7 +310,7 @@ def draw_shipping_lanes(map_ax, x_min, x_max, y_min, y_max):
         # gentle curve toward the inlet (60, 0)
         bend = np.linspace(0, 1, 60) ** 1.6
         ys = y0 + (ys - y0) * bend + (1 - bend) * 0
-        map_ax.plot(xs, ys, color=COLOR_LANE, lw=0.9, ls=(0, (6, 5)),
+        map_ax.plot(*map_coords(xs, ys), color=COLOR_LANE, lw=0.9, ls=(0, (6, 5)),
                     alpha=0.55, zorder=6)
 
 
@@ -300,9 +323,24 @@ def draw_compass_rose(map_ax, x_min, x_max, y_min, y_max):
     opacity on every element -- so it recedes into the chart as a
     background design element rather than a focal point.
     """
-    cx = x_min + (x_max - x_min) * 0.84
-    cy = y_min + (y_max - y_min) * 0.105
-    r_outer = (x_max - x_min) * 0.040
+    if MAP_ORIENTATION == "seaward_up":
+        # Rose in the bottom-right corner of the seaward_up display:
+        # right = south (high display-x, i.e. low y_local), bottom = near-shore.
+        # xlim=(y_max, y_min): center is at y_local = y_max+(y_min-y_max)*0.84
+        # ylim=(x_min, x_max): center is at x_local = x_min+(x_max-x_min)*0.105
+        cx = y_max + (y_min - y_max) * 0.84
+        cy = x_min + (x_max - x_min) * 0.105
+        r_outer = (x_max - x_min) * 0.040
+        # In seaward_up, xlim=(y_max, y_min) so higher data-x is further LEFT
+        # (toward y_max = north).  N label goes left of the rose.
+        n_label_x = cx + r_outer * 1.32
+        n_label_y = cy
+    else:
+        cx = x_min + (x_max - x_min) * 0.84
+        cy = y_min + (y_max - y_min) * 0.105
+        r_outer = (x_max - x_min) * 0.040
+        n_label_x = cx
+        n_label_y = cy + r_outer * 1.32
 
     circle = mpatches.Circle((cx, cy), r_outer, facecolor="none",
                               edgecolor=COLOR_INK_SOFT, lw=0.55, alpha=0.6, zorder=7)
@@ -322,7 +360,7 @@ def draw_compass_rose(map_ax, x_min, x_max, y_min, y_max):
     map_ax.add_patch(PathPatch(star_path, facecolor=COLOR_INK_SOFT,
                                 edgecolor="none", alpha=0.5, zorder=7))
 
-    map_ax.text(cx, cy + r_outer * 1.32, "N", ha="center", va="center",
+    map_ax.text(n_label_x, n_label_y, "N", ha="center", va="center",
                 fontsize=7, color=COLOR_INK_SOFT, alpha=0.7,
                 family=FONT_DISPLAY, zorder=7)
 
@@ -367,53 +405,59 @@ def draw_vessel(map_ax, vessel, label_side="right", label_dy=0.0):
     style = TIER_STYLE[tier]
     scale = style["icon_scale"]
     theta = math.radians(vessel.heading_deg)
-    sin_t, cos_t = math.sin(theta), math.cos(theta)
 
-    # Hull: NOAA-style outline only — no wake, no heading tick.
-    # Consistent stroke weight across all tiers so no vessel reads as
-    # "more important" via line thickness alone.
-    transform = (Affine2D().scale(scale).rotate(-theta).translate(x, y)
+    if MAP_ORIENTATION == "seaward_up":
+        # Plot coords are (y_local, x_local).
+        # The display frame is rotated 90° CCW vs the geographic frame, so
+        # each heading needs +π/2: a north-heading vessel (θ=0) points LEFT
+        # in the display (north=left), which is +π/2 from the glyph's
+        # default "up" orientation.
+        rotation = -theta + math.pi / 2
+        translate_x, translate_y = y, x
+        # Labels: place above the hull (seaward = upward in display).
+        # label_dy nudges horizontally (along-shore = horizontal axis).
+        label_px = y + label_dy
+        label_py = x + scale * 1.10
+        label_ha = "center"
+        if abs(label_dy) > 1e-6:
+            map_ax.plot([y + label_dy * 0.55, y], [x + scale * 0.5, x + scale * 0.55],
+                        color=COLOR_INK_SOFT, lw=0.35, alpha=0.30, zorder=9)
+    else:
+        rotation = -theta
+        translate_x, translate_y = x, y
+        label_dx = scale * 1.10 if label_side == "right" else -scale * 1.10
+        label_ha = "left" if label_side == "right" else "right"
+        label_px = x + label_dx
+        label_py = y + label_dy
+        if abs(label_dy) > 1e-6:
+            leader_x0 = x + (scale * 0.5 if label_side == "right" else -scale * 0.5)
+            map_ax.plot([leader_x0, x + label_dx * 0.55], [y, y + label_dy],
+                        color=COLOR_INK_SOFT, lw=0.35, alpha=0.30, zorder=9)
+
+    transform = (Affine2D().scale(scale).rotate(rotation).translate(translate_x, translate_y)
                  + map_ax.transData)
     patch = PathPatch(path, facecolor=COLOR_VESSEL_FILL, edgecolor=COLOR_INK,
                        lw=0.7, transform=transform, zorder=9)
     map_ax.add_patch(patch)
 
-    # Label: name at top, route below. Gap from hull slightly wider than
-    # Sprint 2 so the symbol breathes independently of its annotation.
-    # Route set in italic at a noticeably smaller size \u2014 a chart footnote,
-    # not a second line of equal weight.
-    label_dx = scale * 1.10 if label_side == "right" else -scale * 1.10
-    ha = "left" if label_side == "right" else "right"
-    y_label = y + label_dy
-
-    if abs(label_dy) > 1e-6:
-        leader_x0 = x + (scale * 0.5 if label_side == "right" else -scale * 0.5)
-        map_ax.plot([leader_x0, x + label_dx * 0.55], [y, y_label],
-                    color=COLOR_INK_SOFT, lw=0.35, alpha=0.30, zorder=9)
-
-    map_ax.text(x + label_dx, y_label, vessel.name, fontsize=style["name_fs"],
-                color=COLOR_INK, family=FONT_BODY, ha=ha, va="bottom",
-                fontweight=style["name_weight"], zorder=10)
-    route_str = f"{vessel.origin}  \u2192  {vessel.destination}"
-    map_ax.text(x + label_dx, y_label, route_str, fontsize=style["detail_fs"],
-                color=COLOR_METADATA, family=FONT_BODY, ha=ha, va="top",
-                fontstyle="italic", alpha=0.65, zorder=10)
+    route_str = f"{vessel.origin}  →  {vessel.destination}"
+    map_ax.text(label_px, label_py, vessel.name, fontsize=style["name_fs"],
+                color=COLOR_INK, family=FONT_BODY, ha=label_ha, va="bottom",
+                fontweight=style["name_weight"], zorder=10, clip_on=True)
+    map_ax.text(label_px, label_py, route_str, fontsize=style["detail_fs"],
+                color=COLOR_METADATA, family=FONT_BODY, ha=label_ha, va="top",
+                fontstyle="italic", alpha=0.65, zorder=10, clip_on=True)
 
 
 # Per-vessel label placement, keyed by name, chosen against the fixed
 # positions in fixtures.py so labels don't collide. "side" puts the
 # label to the right or left of the vessel icon; "dy" is a small extra
-# vertical nudge in meters for tight clusters (only the inlet trio of
-# tug/tug/pilot needs this -- everything else has comfortable room).
+# vertical nudge in meters for tight clusters.
 LABEL_PLACEMENT = {
-    # Inlet cluster: four vessels within ~2 km of each other (OCEAN MAJESTY,
-    # HARBOR KING, EVERGLADES PILOT, MISS CARLA). Vertical nudges spread the
-    # labels so names don't overlap. Values are metres in chart coordinates.
     "OCEAN MAJESTY":    ("right",    0),
     "HARBOR KING":      ("right",  180),
     "EVERGLADES PILOT": ("right",   60),
     "MISS CARLA":       ("right", -180),
-    # All other vessels have comfortable separation; no nudge needed.
     "GULF VOYAGER":   ("right", 0),
     "EVER GRANITE":   ("right", 0),
     "STAR ENDEAVOR":  ("right", 0),
@@ -458,8 +502,9 @@ def draw_home_marker(map_ax, scene, config: HarborConfig):
     # icon competing with the vessels for attention.
     scale = 410.0
     paths = home_marker_path(scale=scale)
+    offset = np.array([y_mid, x_mid] if MAP_ORIENTATION == "seaward_up" else [x_mid, y_mid])
     for p in paths["structure"]:
-        verts = p.vertices + np.array([x_mid, y_mid])
+        verts = p.vertices + offset
         placed = Path(verts, p.codes)
         # Lighter line weight than Sprint 2 (1.6 -> 1.0) so the whole
         # mark sits closer to the chart's other linework rather than
@@ -468,7 +513,7 @@ def draw_home_marker(map_ax, scene, config: HarborConfig):
                                     edgecolor=COLOR_INK, lw=1.0, zorder=11,
                                     joinstyle="miter", capstyle="butt"))
     for p in paths["detail"]:
-        verts = p.vertices + np.array([x_mid, y_mid])
+        verts = p.vertices + offset
         placed = Path(verts, p.codes)
         # Floor lines and the central mullion are finer still and a
         # touch softer in color -- detail that rewards a closer look
@@ -609,6 +654,18 @@ def render_to_image(
     # Compute geographic extent first so build_scene clips the coastline
     # geometry to exactly the rendered viewport, not a fixed constant.
     x_min, x_max, y_min, y_max = compute_view_window(map_ax)
+    if MAP_ORIENTATION == "seaward_up":
+        # compute_view_window uses panel_h/panel_w; in seaward_up the local
+        # x-axis (seaward depth) maps to the display height and y-axis
+        # (along-shore) maps to the display width, so the aspect must be
+        # inverted.  We re-derive here so the hybrid renderer's call to
+        # compute_view_window remains unaffected.
+        bbox = map_ax.get_position()
+        fig_w_in, fig_h_in = map_ax.get_figure().get_size_inches()
+        panel_aspect = (bbox.height * fig_h_in) / (bbox.width * fig_w_in)
+        x_min, x_max, y_min, y_max = solve_viewport(
+            VIEW_SEAWARD_RANGE_NM, 1.0 / panel_aspect, COAST_FRAC_FROM_LEFT
+        )
     y_half_nm = (y_max - y_min) / 2.0 / NM
     scene = build_scene(view_half_height_nm=y_half_nm)
 
