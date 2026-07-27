@@ -7,8 +7,8 @@ in-memory cache, and returns the drawable vessels from that cache.
 See docs/sprint-004-notes.md for the original design writeup and
 docs/sprint-006-notes.md for the cache architecture added in Sprint 6.
 
-Cache design (Sprint 6)
------------------------
+Cache design (Sprint 6 / Task 007)
+------------------------------------
 AIS splits position ("where is it, which way is it heading") from
 static data ("what is it called, what kind of vessel is it") across
 two message types that arrive at very different rates: PositionReport
@@ -17,15 +17,15 @@ every six minutes.  With a 12-second listen window, only vessels whose
 six-minute static cycle happened to land inside that one window were
 ever drawable.
 
-The fix: keep a `dict[str, _PartialVessel]` keyed by MMSI as instance
-state.  Each get_vessels() call merges newly-received messages into
-this cache rather than discarding all state when the listen window
+The fix: a `VesselCache` (keyed by MMSI) lives as instance state on
+the provider.  Each get_vessels() call merges newly-received messages
+into this cache rather than discarding all state when the listen window
 closes.  A vessel's type code and name, once learned from a single
 ShipStaticData message, stay in the cache for subsequent calls that
 only deliver PositionReports.  Vessels not seen in any message for
-longer than `_DEFAULT_STALE_SECONDS` (15 minutes) are evicted so that
-a vessel that has left the area does not linger on the chart
-indefinitely.
+longer than `HARBOR_VIEW_AIS_CACHE_MINUTES` (default 10 minutes) are
+evicted so that a vessel that has left the area does not linger on the
+chart indefinitely.
 
 The refresh loop (harbor_view.appliance.refresh_loop) already
 constructs the provider once and reuses it for the process lifetime,
@@ -75,14 +75,13 @@ _DEFAULT_BBOX = ((25.85, -80.30), (26.45, -79.85))
 # Overridable via HARBOR_VIEW_AIS_LISTEN_SECONDS.
 _DEFAULT_LISTEN_SECONDS = 12.0
 
-# How long a vessel can be absent from the AIS feed before it is
-# considered gone and removed from the cache.  15 minutes gives the
-# vessel's six-minute ShipStaticData cycle two full transmissions
-# worth of margin before eviction, and is short enough that a vessel
-# that leaves the bounding box does not linger on the chart for a
-# significant fraction of a tidal cycle.  Overridable via
-# HARBOR_VIEW_AIS_STALE_SECONDS.
-_DEFAULT_STALE_SECONDS = 900.0
+# How long (in minutes) a vessel can be absent from the AIS feed before
+# it is considered gone and removed from the cache.  Ten minutes bridges
+# a couple of missed ShipStaticData cycles while being short enough that
+# a vessel that leaves the bounding box does not linger on the chart for
+# a significant fraction of a tidal cycle.  Overridable via
+# HARBOR_VIEW_AIS_CACHE_MINUTES.
+_DEFAULT_CACHE_MINUTES = 10.0
 
 # AISStream requires the subscription message within 3 seconds of the
 # socket opening, and connecting/authenticating can itself take a
@@ -186,6 +185,75 @@ class _PartialVessel:
         )
 
 
+class VesselCache:
+    """Persistent in-memory store of _PartialVessel entries, keyed by MMSI.
+
+    Accumulates AIS messages across listen windows; evicts entries whose
+    ``last_seen_unix`` is older than the configured TTL so vessels that
+    have left the area do not linger indefinitely.
+    """
+
+    def __init__(self, cache_minutes: float) -> None:
+        self._ttl_seconds = cache_minutes * 60.0
+        self._entries: dict[str, _PartialVessel] = {}
+
+    def update(self, incoming: _PartialVessel) -> None:
+        """Merge ``incoming`` into the existing entry for its MMSI.
+
+        Non-None fields on ``incoming`` overwrite the corresponding field
+        on the existing entry; None fields are left unchanged so
+        previously-learned values (name, AIS type code) survive across
+        subsequent messages that don't carry them.  ``last_seen_unix`` is
+        always set to the incoming value.  If no entry exists for the
+        MMSI, ``incoming`` becomes the entry directly.
+        """
+        existing = self._entries.get(incoming.mmsi)
+        if existing is None:
+            self._entries[incoming.mmsi] = incoming
+            return
+        for attr in ("latitude", "longitude", "heading_deg", "speed_kn",
+                     "nav_status_code", "name", "ais_type_code", "destination"):
+            val = getattr(incoming, attr)
+            if val is not None:
+                setattr(existing, attr, val)
+        existing.last_seen_unix = incoming.last_seen_unix
+
+    def expire(self, now: float) -> int:
+        """Evict entries not seen within the TTL.  Returns the count evicted."""
+        stale = [m for m, p in self._entries.items()
+                 if now - p.last_seen_unix > self._ttl_seconds]
+        for m in stale:
+            del self._entries[m]
+        return len(stale)
+
+    def drawable_vessels(self) -> list[Vessel]:
+        """Return one Vessel per drawable entry (entry must have a valid position)."""
+        return [p.to_vessel() for p in self._entries.values() if p.is_drawable()]
+
+    def size(self) -> int:
+        """Number of entries currently in the cache."""
+        return len(self._entries)
+
+    def clear(self) -> None:
+        """Remove all entries."""
+        self._entries.clear()
+
+    def __contains__(self, mmsi: str) -> bool:
+        return mmsi in self._entries
+
+    def __getitem__(self, mmsi: str) -> _PartialVessel:
+        return self._entries[mmsi]
+
+    def __len__(self) -> int:
+        return len(self._entries)
+
+    def __iter__(self):
+        return iter(self._entries)
+
+    def items(self):
+        return self._entries.items()
+
+
 def _nav_status_to_vessel_status(code: int | None) -> VesselStatus:
     """AIS navigational status is an 8-value enumeration (0-15, with
     gaps); Harbor View only distinguishes a handful of coarse states.
@@ -223,11 +291,11 @@ class AISProvider(VesselProvider):
                                   Everglades / Fort Lauderdale Beach.
       HARBOR_VIEW_AIS_LISTEN_SECONDS
                                   optional float; defaults to 12.
-      HARBOR_VIEW_AIS_STALE_SECONDS
-                                  optional float; defaults to 900 (15
-                                  minutes).  Vessels not seen in any
-                                  AIS message for longer than this
-                                  threshold are evicted from the cache.
+      HARBOR_VIEW_AIS_CACHE_MINUTES
+                                  optional float; defaults to 10.
+                                  Vessels not seen in any AIS message
+                                  for longer than this threshold are
+                                  evicted from the cache.
 
     Connection failures (no key, unreachable host, auth rejected,
     malformed JSON) are logged but do not raise.  A provider with a
@@ -240,7 +308,7 @@ class AISProvider(VesselProvider):
         api_key: str | None = None,
         bounding_box: tuple[tuple[float, float], tuple[float, float]] | None = None,
         listen_seconds: float | None = None,
-        stale_seconds: float | None = None,
+        cache_minutes: float | None = None,
     ) -> None:
         # Explicit constructor args are supported for tests and for
         # callers that already have configuration in hand; the normal
@@ -260,22 +328,23 @@ class AISProvider(VesselProvider):
                     raw, _DEFAULT_LISTEN_SECONDS,
                 )
                 self._listen_seconds = _DEFAULT_LISTEN_SECONDS
-        if stale_seconds is not None:
-            self._stale_seconds = stale_seconds
+        if cache_minutes is not None:
+            _cache_minutes = cache_minutes
         else:
-            raw = os.environ.get("HARBOR_VIEW_AIS_STALE_SECONDS")
+            raw = os.environ.get("HARBOR_VIEW_AIS_CACHE_MINUTES")
             try:
-                self._stale_seconds = float(raw) if raw else _DEFAULT_STALE_SECONDS
+                _cache_minutes = float(raw) if raw else _DEFAULT_CACHE_MINUTES
             except ValueError:
                 logger.warning(
-                    "HARBOR_VIEW_AIS_STALE_SECONDS=%r is not a number; using %.0fs.",
-                    raw, _DEFAULT_STALE_SECONDS,
+                    "HARBOR_VIEW_AIS_CACHE_MINUTES=%r is not a number; using %.0f min.",
+                    raw, _DEFAULT_CACHE_MINUTES,
                 )
-                self._stale_seconds = _DEFAULT_STALE_SECONDS
+                _cache_minutes = _DEFAULT_CACHE_MINUTES
         # Persistent per-vessel state, keyed by MMSI.  Survives across
         # get_vessels() calls for the lifetime of this provider instance.
-        self._cache: dict[str, _PartialVessel] = {}
+        self._cache = VesselCache(cache_minutes=_cache_minutes)
         self._messages_this_cycle: dict[str, int] = {}
+        self._last_expired_count: int = 0
 
     def get_vessels(self) -> list[Vessel]:
         if not self._api_key:
@@ -312,14 +381,9 @@ class AISProvider(VesselProvider):
                 "returning vessels from cache."
             )
 
-        # Evict vessels not seen within the staleness window.
+        # Evict vessels not seen within the cache TTL.
         now = time.time()
-        stale_mmsis = [
-            mmsi for mmsi, p in self._cache.items()
-            if now - p.last_seen_unix > self._stale_seconds
-        ]
-        for mmsi in stale_mmsis:
-            del self._cache[mmsi]
+        self._last_expired_count = self._cache.expire(now)
 
         # Per-cycle cache breakdown: how the cache grew and what's drawable.
         has_position = {m for m, p in self._cache.items() if p.latitude is not None}
@@ -327,7 +391,7 @@ class AISProvider(VesselProvider):
         has_both = has_position & has_static
         new_positions = has_position - pre_position
         new_static = has_static - pre_static
-        vessels = [p.to_vessel() for p in self._cache.values() if p.is_drawable()]
+        vessels = self._cache.drawable_vessels()
         logger.info(
             "AISProvider cache: total=%d  position=%d  static=%d  both=%d  "
             "drawable=%d  new_position=%d  new_static=%d  evicted=%d",
@@ -338,7 +402,7 @@ class AISProvider(VesselProvider):
             len(vessels),
             len(new_positions),
             len(new_static),
-            len(stale_mmsis),
+            self._last_expired_count,
         )
         # Per-vessel diagnostic log for every vessel that has been seen at all.
         # Logs AIS type, effective Harbor View type, and drawable reason so
@@ -548,10 +612,24 @@ class AISProvider(VesselProvider):
         print(f"  Vessels filtered (missing/invalid pos) : {n_filtered}")
         print(f"  Vessels outside viewport               : {n_outside_vp}")
         print()
+        # Cache-level statistics.
+        n_drawable_cache = len(self._cache.drawable_vessels())
+        ttl_min = self._cache._ttl_seconds / 60.0
+        ages_s = [now - self._cache[m].last_seen_unix for m in self._cache]
+        print(f"  Cache TTL                              : {ttl_min:.1f} min")
+        print(f"  Cache total (post-eviction)            : {self._cache.size()}")
+        print(f"  Cache drawable                         : {n_drawable_cache}")
+        print(f"  Expired this cycle                     : {self._last_expired_count}")
+        if ages_s:
+            print(f"  Oldest vessel age                      : {max(ages_s):.0f}s  "
+                  f"({max(ages_s) / 60:.1f} min)")
+            print(f"  Newest vessel age                      : {min(ages_s):.0f}s  "
+                  f"({min(ages_s) / 60:.1f} min)")
+        print()
         print("=" * len(header))
         print()
 
-    async def _collect(self, cache: dict[str, _PartialVessel]) -> None:
+    async def _collect(self, cache: VesselCache) -> None:
         """Open the websocket, subscribe, and accumulate messages for
         `self._listen_seconds` into `cache`.
 
@@ -594,8 +672,8 @@ class AISProvider(VesselProvider):
                     break
                 self._handle_message(raw, cache)
 
-    def _handle_message(self, raw, partials: dict[str, _PartialVessel]) -> None:
-        """Parse one websocket frame and fold it into `partials`.
+    def _handle_message(self, raw, cache: VesselCache) -> None:
+        """Parse one websocket frame and fold it into ``cache``.
         Any single malformed/unexpected message is logged and skipped
         -- it must never abort the whole listen session, per the
         brief's "gracefully ignore incomplete or malformed records."
@@ -643,20 +721,20 @@ class AISProvider(VesselProvider):
             self._messages_this_cycle.get(message_type, 0) + 1
         )
 
-        partial = partials.setdefault(mmsi, _PartialVessel(mmsi=mmsi))
-        partial.last_seen_unix = time.time()
+        incoming = _PartialVessel(mmsi=mmsi, last_seen_unix=time.time())
 
         payload = envelope.get("Message", {}).get(message_type)
         if not isinstance(payload, dict):
+            cache.update(incoming)
             return
 
         if message_type == "PositionReport":
-            partial.latitude = lat
-            partial.longitude = lon
+            incoming.latitude = lat
+            incoming.longitude = lon
 
             ship_name = metadata.get("ShipName")
             if ship_name and ship_name.strip():
-                partial.name = ship_name
+                incoming.name = ship_name
 
             heading = payload.get("TrueHeading")
             # AIS reports 511 for "heading not available." Cog
@@ -666,26 +744,28 @@ class AISProvider(VesselProvider):
             if heading is None or heading == 511:
                 heading = payload.get("Cog")
             if heading is not None:
-                partial.heading_deg = float(heading)
+                incoming.heading_deg = float(heading)
 
             sog = payload.get("Sog")
             if sog is not None and sog != 102.3:  # 102.3 = "not available"
-                partial.speed_kn = float(sog)
+                incoming.speed_kn = float(sog)
 
             nav_status = payload.get("NavigationalStatus")
             if nav_status is not None:
-                partial.nav_status_code = int(nav_status)
+                incoming.nav_status_code = int(nav_status)
 
         elif message_type == "ShipStaticData":
             logger.debug("ShipStaticData payload MMSI=%s: %r", mmsi, payload)
             ais_type = payload.get("Type")
             if ais_type is not None:
-                partial.ais_type_code = int(ais_type)
+                incoming.ais_type_code = int(ais_type)
 
             destination = payload.get("Destination")
             if destination is not None:
-                partial.destination = destination
+                incoming.destination = destination
 
             name = payload.get("Name")
             if name and name.strip():
-                partial.name = name
+                incoming.name = name
+
+        cache.update(incoming)

@@ -18,7 +18,7 @@ import time
 
 import pytest
 
-from harbor_view.providers.ais import AISProvider, _PartialVessel, _in_bounding_box
+from harbor_view.providers.ais import AISProvider, _PartialVessel, VesselCache, _in_bounding_box
 from harbor_view.providers.base import VesselProvider
 from harbor_view.providers.models import Vessel, VesselStatus, VesselType
 
@@ -158,10 +158,10 @@ def _provider():
 
 def test_position_report_alone_is_drawable():
     provider = _provider()
-    partials = {}
-    provider._handle_message(_POSITION_REPORT, partials)
-    assert len(partials) == 1
-    partial = partials["367719770"]
+    cache = VesselCache(cache_minutes=10)
+    provider._handle_message(_POSITION_REPORT, cache)
+    assert len(cache) == 1
+    partial = cache["367719770"]
     assert partial.latitude == 26.10
     assert partial.heading_deg == 205
     assert partial.speed_kn == 12.3
@@ -171,12 +171,12 @@ def test_position_report_alone_is_drawable():
 
 def test_merging_position_and_static_data_becomes_drawable():
     provider = _provider()
-    partials = {}
-    provider._handle_message(_POSITION_REPORT, partials)
-    provider._handle_message(_SHIP_STATIC_DATA, partials)
+    cache = VesselCache(cache_minutes=10)
+    provider._handle_message(_POSITION_REPORT, cache)
+    provider._handle_message(_SHIP_STATIC_DATA, cache)
 
-    assert len(partials) == 1  # same MMSI, merged into one record
-    partial = partials["367719770"]
+    assert len(cache) == 1  # same MMSI, merged into one record
+    partial = cache["367719770"]
     assert partial.is_drawable() is True
 
     vessel = partial.to_vessel()
@@ -198,11 +198,11 @@ def test_order_independent_merging():
     the same record, not create a duplicate.
     """
     provider = _provider()
-    partials = {}
-    provider._handle_message(_SHIP_STATIC_DATA, partials)
-    provider._handle_message(_POSITION_REPORT, partials)
-    assert len(partials) == 1
-    assert partials["367719770"].is_drawable() is True
+    cache = VesselCache(cache_minutes=10)
+    provider._handle_message(_SHIP_STATIC_DATA, cache)
+    provider._handle_message(_POSITION_REPORT, cache)
+    assert len(cache) == 1
+    assert cache["367719770"].is_drawable() is True
 
 
 def test_message_with_unmapped_vessel_type_renders_as_unknown():
@@ -221,10 +221,10 @@ def test_message_with_unmapped_vessel_type_renders_as_unknown():
         "Message": {"PositionReport": {"TrueHeading": 90, "Cog": 90, "Sog": 4.0, "NavigationalStatus": 0}},
     })
     provider = _provider()
-    partials = {}
-    provider._handle_message(static_data, partials)
-    provider._handle_message(position, partials)
-    p = partials["999999999"]
+    cache = VesselCache(cache_minutes=10)
+    provider._handle_message(static_data, cache)
+    provider._handle_message(position, cache)
+    p = cache["999999999"]
     assert p.is_drawable() is True
     vessel = p.to_vessel()
     assert vessel.vessel_type is VesselType.UNKNOWN
@@ -233,16 +233,16 @@ def test_message_with_unmapped_vessel_type_renders_as_unknown():
 
 def test_malformed_json_is_ignored_not_raised():
     provider = _provider()
-    partials = {}
-    provider._handle_message("not valid json {{{", partials)
-    assert partials == {}
+    cache = VesselCache(cache_minutes=10)
+    provider._handle_message("not valid json {{{", cache)
+    assert cache.size() == 0
 
 
 def test_missing_required_keys_are_ignored_not_raised():
     provider = _provider()
-    partials = {}
-    provider._handle_message(json.dumps({"nothing": "useful"}), partials)
-    assert partials == {}
+    cache = VesselCache(cache_minutes=10)
+    provider._handle_message(json.dumps({"nothing": "useful"}), cache)
+    assert cache.size() == 0
 
 
 def test_position_report_outside_bbox_is_rejected():
@@ -257,9 +257,9 @@ def test_position_report_outside_bbox_is_rejected():
         "MetaData": {"MMSI": 1, "ShipName": "FAR", "latitude": 51.4, "longitude": 3.1},
         "Message": {"PositionReport": {"TrueHeading": 90, "Cog": 90}},
     })
-    partials = {}
-    provider._handle_message(far_away, partials)
-    assert partials == {}
+    cache = VesselCache(cache_minutes=10)
+    provider._handle_message(far_away, cache)
+    assert cache.size() == 0
 
 
 def test_static_data_outside_bbox_is_accepted():
@@ -276,7 +276,7 @@ def test_static_data_outside_bbox_is_accepted():
     bbox-validated PositionReport).
     """
     provider = _provider()
-    partials = {}
+    cache = VesselCache(cache_minutes=10)
     static_outside = json.dumps({
         "MessageType": "ShipStaticData",
         "MetaData": {
@@ -287,9 +287,9 @@ def test_static_data_outside_bbox_is_accepted():
             "ShipStaticData": {"Name": "TEST VESSEL", "Type": 70, "Destination": "PORT EVG"},
         },
     })
-    provider._handle_message(static_outside, partials)
-    assert "367719770" in partials
-    p = partials["367719770"]
+    provider._handle_message(static_outside, cache)
+    assert "367719770" in cache
+    p = cache["367719770"]
     assert p.ais_type_code == 70
     assert p.name == "TEST VESSEL"
     assert p.latitude is None   # synthetic coord must not populate position
@@ -303,7 +303,7 @@ def test_static_data_with_no_lat_lon_is_accepted():
     not cause the message to be silently dropped.
     """
     provider = _provider()
-    partials = {}
+    cache = VesselCache(cache_minutes=10)
     static_no_coords = json.dumps({
         "MessageType": "ShipStaticData",
         "MetaData": {"MMSI": 367719770},
@@ -311,9 +311,9 @@ def test_static_data_with_no_lat_lon_is_accepted():
             "ShipStaticData": {"Name": "TEST VESSEL", "Type": 52, "Destination": ""},
         },
     })
-    provider._handle_message(static_no_coords, partials)
-    assert "367719770" in partials
-    p = partials["367719770"]
+    provider._handle_message(static_no_coords, cache)
+    assert "367719770" in cache
+    p = cache["367719770"]
     assert p.ais_type_code == 52
     assert p.name == "TEST VESSEL"
     assert p.latitude is None
@@ -331,11 +331,11 @@ def test_static_data_joins_to_existing_position_record_by_mmsi():
     accepted).  After both messages the vessel must be drawable.
     """
     provider = _provider()
-    partials = {}
+    cache = VesselCache(cache_minutes=10)
 
-    provider._handle_message(_POSITION_REPORT, partials)
-    assert partials["367719770"].latitude == 26.10
-    assert partials["367719770"].ais_type_code is None  # type not yet known
+    provider._handle_message(_POSITION_REPORT, cache)
+    assert cache["367719770"].latitude == 26.10
+    assert cache["367719770"].ais_type_code is None  # type not yet known
 
     static_outside = json.dumps({
         "MessageType": "ShipStaticData",
@@ -347,9 +347,9 @@ def test_static_data_joins_to_existing_position_record_by_mmsi():
             "ShipStaticData": {"Name": "TEST VESSEL", "Type": 70, "Destination": "NASSAU"},
         },
     })
-    provider._handle_message(static_outside, partials)
+    provider._handle_message(static_outside, cache)
 
-    p = partials["367719770"]
+    p = cache["367719770"]
     assert p.ais_type_code == 70       # identity from ShipStaticData
     assert p.latitude == 26.10         # position preserved from PositionReport
     assert p.longitude == -80.09
@@ -371,9 +371,9 @@ def test_unavailable_heading_falls_back_to_cog():
         "Message": {"PositionReport": {"TrueHeading": 511, "Cog": 123.4}},
     })
     provider = _provider()
-    partials = {}
-    provider._handle_message(msg, partials)
-    assert partials["5"].heading_deg == 123.4
+    cache = VesselCache(cache_minutes=10)
+    provider._handle_message(msg, cache)
+    assert cache["5"].heading_deg == 123.4
 
 
 def test_unavailable_speed_is_not_recorded():
@@ -386,9 +386,9 @@ def test_unavailable_speed_is_not_recorded():
         "Message": {"PositionReport": {"TrueHeading": 90, "Sog": 102.3}},
     })
     provider = _provider()
-    partials = {}
-    provider._handle_message(msg, partials)
-    assert partials["6"].speed_kn is None
+    cache = VesselCache(cache_minutes=10)
+    provider._handle_message(msg, cache)
+    assert cache["6"].speed_kn is None
 
 
 # ---------------------------------------------------------------------------
@@ -450,7 +450,7 @@ def test_stale_vessels_are_evicted(monkeypatch):
     provider = AISProvider(
         api_key="x",
         bounding_box=((25.85, -80.30), (26.45, -79.85)),
-        stale_seconds=10.0,
+        cache_minutes=10.0 / 60.0,
     )
 
     async def first_window(cache):
@@ -504,10 +504,10 @@ def test_connection_failure_with_populated_cache_returns_cached_vessels(monkeypa
 def test_drawable_when_true_heading_available():
     """Step 1: vessel with TrueHeading is drawable and uses that value."""
     provider = _provider()
-    partials = {}
-    provider._handle_message(_POSITION_REPORT, partials)   # TrueHeading=205
-    provider._handle_message(_SHIP_STATIC_DATA, partials)
-    partial = partials["367719770"]
+    cache = VesselCache(cache_minutes=10)
+    provider._handle_message(_POSITION_REPORT, cache)   # TrueHeading=205
+    provider._handle_message(_SHIP_STATIC_DATA, cache)
+    partial = cache["367719770"]
     assert partial.is_drawable() is True
     assert partial.to_vessel().heading_deg == 205
 
@@ -531,10 +531,10 @@ def test_drawable_when_only_cog_available():
         "Message": {"ShipStaticData": {"Name": "CARGO A", "Type": 70, "Destination": "MIAMI"}},
     })
     provider = _provider()
-    partials = {}
-    provider._handle_message(pos, partials)
-    provider._handle_message(static, partials)
-    partial = partials["111111111"]
+    cache = VesselCache(cache_minutes=10)
+    provider._handle_message(pos, cache)
+    provider._handle_message(static, cache)
+    partial = cache["111111111"]
     assert partial.is_drawable() is True
     assert partial.to_vessel().heading_deg == 180.0
 
@@ -560,10 +560,10 @@ def test_drawable_when_heading_and_cog_both_unavailable():
         "Message": {"ShipStaticData": {"Name": "ASG KHERSON", "Type": 70, "Destination": "PORT EVG"}},
     })
     provider = _provider()
-    partials = {}
-    provider._handle_message(pos, partials)
-    provider._handle_message(static, partials)
-    partial = partials["222222222"]
+    cache = VesselCache(cache_minutes=10)
+    provider._handle_message(pos, cache)
+    provider._handle_message(static, cache)
+    partial = cache["222222222"]
     assert partial.heading_deg is None           # no usable heading data stored
     assert partial.is_drawable() is True         # no longer blocked by missing heading
     vessel = partial.to_vessel()
@@ -696,7 +696,7 @@ def test_debug_table_unmapped_vessel_is_rendered(capsys):
     position must show Rndr=YES and be counted in 'Vessels rendered'.
     """
     provider = _provider()
-    provider._cache["111000001"] = _make_in_viewport_partial("111000001", ais_type_code=30)
+    provider._cache.update(_make_in_viewport_partial("111000001", ais_type_code=30))
     provider._print_debug_table()
     out = capsys.readouterr().out
 
@@ -713,7 +713,7 @@ def test_debug_table_missing_position_is_filtered(capsys):
     p = _PartialVessel(mmsi="111000002")
     p.name = "NO POS"
     p.ais_type_code = 70
-    provider._cache["111000002"] = p
+    provider._cache.update(p)
     provider._print_debug_table()
     out = capsys.readouterr().out
 
