@@ -239,3 +239,83 @@ def test_factory_selects_waveshare(monkeypatch):
     from harbor_view.output import get_output_backend
     from harbor_view.output.waveshare import WaveshareBackend
     assert isinstance(get_output_backend(), WaveshareBackend)
+
+
+# ---------------------------------------------------------------------------
+# Native-resolution canvas size abstraction — WaveshareBackend
+# ---------------------------------------------------------------------------
+
+def test_waveshare_backend_exposes_preferred_canvas_size():
+    """WaveshareBackend.preferred_canvas_size must be (800, 480)."""
+    from harbor_view.output.waveshare import WaveshareBackend
+    assert WaveshareBackend.preferred_canvas_size == (800, 480)
+
+
+def test_waveshare_write_skips_fit_to_display_for_matching_size(monkeypatch):
+    """When the image is already 800×480, write() must not call _fit_to_display."""
+    import sys
+    import harbor_view.output.waveshare as ws_module
+
+    calls = []
+
+    def spy_fit(image, display_w, display_h):
+        calls.append((display_w, display_h))
+        return image.convert("1")
+
+    monkeypatch.setattr(ws_module, "_fit_to_display", spy_fit)
+
+    class FakeEPD:
+        width = 800
+        height = 480
+        def init(self): pass
+        def display(self, buf): pass
+        def getbuffer(self, img): return b""
+        def sleep(self): pass
+
+    class FakeModule:
+        EPD = FakeEPD
+
+    fake_pkg = type(sys)("waveshare_epd")
+    fake_pkg.epd7in5_V2 = FakeModule()
+    monkeypatch.setitem(sys.modules, "waveshare_epd", fake_pkg)
+    monkeypatch.setitem(sys.modules, "waveshare_epd.epd7in5_V2", FakeModule())
+
+    src = Image.new("RGB", (800, 480), color=(255, 255, 255))
+    ws_module.WaveshareBackend().write(src, "ignored.png")
+
+    assert calls == [], "_fit_to_display should not be called for an already-sized image"
+
+
+def test_waveshare_write_still_calls_fit_to_display_for_oversized_image(monkeypatch):
+    """When the image is larger than 800×480, write() must still call _fit_to_display."""
+    import sys
+    import harbor_view.output.waveshare as ws_module
+
+    calls = []
+
+    def spy_fit(image, display_w, display_h):
+        calls.append((display_w, display_h))
+        return image.resize((display_w, display_h)).convert("1")
+
+    monkeypatch.setattr(ws_module, "_fit_to_display", spy_fit)
+
+    class FakeEPD:
+        width = 800
+        height = 480
+        def init(self): pass
+        def display(self, buf): pass
+        def getbuffer(self, img): return b""
+        def sleep(self): pass
+
+    class FakeModule:
+        EPD = FakeEPD
+
+    fake_pkg = type(sys)("waveshare_epd")
+    fake_pkg.epd7in5_V2 = FakeModule()
+    monkeypatch.setitem(sys.modules, "waveshare_epd", fake_pkg)
+    monkeypatch.setitem(sys.modules, "waveshare_epd.epd7in5_V2", FakeModule())
+
+    src = Image.new("RGB", (2000, 1200), color=(255, 255, 255))
+    ws_module.WaveshareBackend().write(src, "ignored.png")
+
+    assert calls == [(800, 480)], "_fit_to_display must be called for an oversized image"

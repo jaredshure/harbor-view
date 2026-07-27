@@ -117,8 +117,8 @@ def map_coords(x, y):
     return x, y
 
 
-def build_layout():
-    fig = plt.figure(figsize=(FIG_W_IN, FIG_H_IN), dpi=DPI)
+def build_layout(fig_w_in=FIG_W_IN, fig_h_in=FIG_H_IN):
+    fig = plt.figure(figsize=(fig_w_in, fig_h_in), dpi=DPI)
     fig.patch.set_facecolor("#FFFFFF")
 
     m = MARGIN_FRAC
@@ -593,48 +593,72 @@ def draw_home_marker(map_ax, scene, config: HarborConfig):
 # Sidebar
 # ---------------------------------------------------------------------------
 def draw_sidebar(sidebar_ax, now: _dt.datetime, config: HarborConfig):
-    """Sprint 2.5 (Priority 5): pushed further toward an antique chart
-    margin than Sprint 2 -- hairline rules (0.8 -> 0.5), a slightly
-    smaller/quieter time treatment, and a touch more breathing room
-    between blocks. Still no new information; only weight and spacing.
+    """Responsive sidebar that scales with the actual canvas size.
+
+    Font sizes scale proportionally with the sidebar's physical height so
+    the layout works at any canvas resolution -- 2000\u00d71200, 800\u00d7480, or
+    anything in between.  The y-positions are in data coords (0..1) and
+    are canvas-size-invariant; only font sizes need explicit scaling.
+
+    Visual hierarchy is preserved at every size:
+      Large   -- title, current time
+      Medium  -- weather / wind / tide sections
+      Small   -- vessel legend
     """
     ax = sidebar_ax
     ax.set_xlim(0, 1)
     ax.set_ylim(0, 1)
 
+    # Derive the sidebar's physical dimensions from the figure that was
+    # actually rendered.  Both width and height are needed: height drives
+    # font scaling; width drives the legend glyph aspect correction.
+    sidebar_bbox = ax.get_position()
+    actual_fig_w, actual_fig_h = ax.get_figure().get_size_inches()
+    sidebar_w_in = sidebar_bbox.width * actual_fig_w
+    sidebar_h_in = sidebar_bbox.height * actual_fig_h
+
+    # Reference sidebar height: the physical height this layout was
+    # originally drawn for (landscape 10\u00d76-inch figure, MARGIN_FRAC margins).
+    # fs_scale < 1 at smaller canvases, > 1 at larger canvases.
+    _ref_h = (1.0 - 2.0 * MARGIN_FRAC) * FIG_H_IN
+    fs_scale = sidebar_h_in / _ref_h
+
+    # Font sizes for each tier, scaled from the reference point sizes.
+    # Floors keep secondary text legible even at aggressive downscaling.
+    fs_title   = max(7.0, 20.0 * fs_scale)   # Large: title
+    fs_time    = max(6.0, 18.0 * fs_scale)   # Large: current time
+    fs_city    = max(5.0,  8.5 * fs_scale)   # subtitle under title
+    fs_caption = max(4.5,  8.5 * fs_scale)   # Medium: section captions
+    fs_section = max(5.0, 10.0 * fs_scale)   # Medium: section body lines
+    fs_legend  = max(5.0,  9.5 * fs_scale)   # Small: legend labels
+
     y = 0.95
-    ax.text(0.09, y, "Harbor View", fontsize=20, family=FONT_DISPLAY,
+    ax.text(0.09, y, "Harbor View", fontsize=fs_title, family=FONT_DISPLAY,
             color=COLOR_INK, ha="left", va="top")
     y -= 0.034
-    ax.text(0.09, y, config.location_city, fontsize=8.5,
+    ax.text(0.09, y, config.location_city, fontsize=fs_city,
             family=FONT_BODY, color=COLOR_INK_SOFT, ha="left", va="top",
             style="italic")
     y -= 0.052
     ax.plot([0.09, 0.91], [y, y], color=COLOR_RULE, lw=0.5)
 
-    # Current time: quiet, not shouting -- closer to a chart's printed
-    # marginal note than a clock-app readout. Slightly smaller than
-    # Sprint 2 so it no longer competes with the title for top billing.
     y -= 0.07
     time_str = now.strftime("%-I:%M %p %Z") if hasattr(now, "strftime") else str(now)
-    ax.text(0.09, y, time_str, fontsize=18, family=FONT_DISPLAY,
+    ax.text(0.09, y, time_str, fontsize=fs_time, family=FONT_DISPLAY,
             color=COLOR_INK, ha="left", va="top")
 
     y -= 0.095
 
     def caption(label, y):
-        # Letter-spaced caption by joining characters with a thin space
-        # -- a cheap but effective stand-in for true typographic
-        # tracking, evoking engraved chart labels.
         spaced = "\u2009".join(label)
-        ax.text(0.09, y, spaced, fontsize=8.5, family=FONT_BODY,
+        ax.text(0.09, y, spaced, fontsize=fs_caption, family=FONT_BODY,
                 color=COLOR_INK_SOFT, ha="left", va="top")
         return y - 0.030
 
     def section(label, lines, y):
         y = caption(label, y)
         for line in lines:
-            ax.text(0.105, y, line, fontsize=10, family=FONT_BODY,
+            ax.text(0.105, y, line, fontsize=fs_section, family=FONT_BODY,
                     color=COLOR_INK, ha="left", va="top")
             y -= 0.0285
         return y - 0.038
@@ -659,31 +683,20 @@ def draw_sidebar(sidebar_ax, now: _dt.datetime, config: HarborConfig):
     icon_x = 0.15
     label_x = 0.26
     # The sidebar axes spans (0,1)x(0,1) in DATA units but the axes box
-    # itself is narrower than it is tall on the figure (sidebar_w fraction
-    # of FIG_W_IN wide vs (1-2m) fraction of FIG_H_IN tall). A glyph drawn
-    # with equal x/y data-unit scale would look squashed; correct for the
-    # real on-figure aspect so hulls keep their intended proportions.
-    sidebar_bbox = ax.get_position()
-    sidebar_w_in = sidebar_bbox.width * FIG_W_IN
-    sidebar_h_in = sidebar_bbox.height * FIG_H_IN
-    # data-units-per-inch differs between x and y since both span 0..1
-    # over different physical inches; aspect_correction makes 1 unit of
-    # glyph-y look the same physical length as 1 unit of glyph-x.
+    # itself is narrower than it is tall on the figure.  aspect_correction
+    # makes 1 unit of glyph-y look the same physical length as 1 unit of
+    # glyph-x so hulls keep their intended proportions at any canvas size.
     aspect_correction = sidebar_w_in / sidebar_h_in
 
     for kind, label in legend_items:
         path = GLYPH_BY_KIND[kind]()
         scale_x = 0.058
         scale_y = scale_x * aspect_correction
-        # path's own y-range is roughly [-0.5*len, 0.5*len] in unit
-        # space already (hull paths are centered on origin), so
-        # offsetting by (icon_x, y) centers the icon on the label's
-        # vertical position directly -- no extra -0.010 fudge needed.
         verts = path.vertices * np.array([scale_x, scale_y]) + np.array([icon_x, y])
         placed = Path(verts, path.codes)
         ax.add_patch(PathPatch(placed, facecolor=COLOR_SIDEBAR_BG,
                                 edgecolor=COLOR_INK, lw=0.7, zorder=5))
-        ax.text(label_x, y, label, fontsize=9.5, family=FONT_BODY,
+        ax.text(label_x, y, label, fontsize=fs_legend, family=FONT_BODY,
                 color=COLOR_INK, ha="left", va="center")
         y -= 0.044
 
@@ -694,6 +707,7 @@ def draw_sidebar(sidebar_ax, now: _dt.datetime, config: HarborConfig):
 def render_to_image(
     vessel_provider: VesselProvider | None = None,
     config: HarborConfig | None = None,
+    canvas_size: tuple[int, int] | None = None,
 ) -> "PIL.Image.Image":
     """Render Harbor View and return the result as a PIL Image.
 
@@ -706,6 +720,11 @@ def render_to_image(
 
     `config` controls location name, city, home-marker position, and
     timezone.  Defaults to `DEFAULT_CONFIG`.
+
+    `canvas_size` overrides the default 2000×1200 canvas with an explicit
+    (width, height) in pixels.  The figure dimensions are derived by
+    dividing by DPI (200) so the resulting image is exactly canvas_size.
+    Omit (or pass None) to use the module-level FIG_W_IN × FIG_H_IN default.
     """
     import io
     import PIL.Image
@@ -715,7 +734,9 @@ def render_to_image(
     if config is None:
         config = DEFAULT_CONFIG
 
-    fig, sidebar_ax, map_ax = build_layout()
+    _fig_w = canvas_size[0] / DPI if canvas_size is not None else FIG_W_IN
+    _fig_h = canvas_size[1] / DPI if canvas_size is not None else FIG_H_IN
+    fig, sidebar_ax, map_ax = build_layout(fig_w_in=_fig_w, fig_h_in=_fig_h)
 
     # Compute geographic extent first so build_scene clips the coastline
     # geometry to exactly the rendered viewport, not a fixed constant.

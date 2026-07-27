@@ -100,8 +100,10 @@ def render_once(output_path: str, vessel_provider) -> bool:
     """
     from harbor_view.output import get_output_backend
     try:
-        image = _get_render_fn()(vessel_provider=vessel_provider)
-        get_output_backend().write(image, output_path)
+        backend = get_output_backend()
+        canvas_size = getattr(backend, "preferred_canvas_size", None)
+        image = _get_render_fn()(vessel_provider=vessel_provider, canvas_size=canvas_size)
+        backend.write(image, output_path)
     except Exception:
         logger.exception(
             "Render failed; the previously displayed image (if any) at "

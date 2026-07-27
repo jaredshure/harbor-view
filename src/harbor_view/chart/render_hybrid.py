@@ -251,6 +251,7 @@ def _draw_calibration_debug(
 
 def render_hybrid_to_image(
     vessel_provider: VesselProvider | None = None,
+    canvas_size: tuple[int, int] | None = None,
 ) -> "PIL.Image.Image":
     """Render Harbor View in hybrid mode and return the result as a PIL Image.
 
