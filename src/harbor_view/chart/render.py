@@ -406,6 +406,56 @@ _LABEL_SYMBOL_GAP  = 1.30
 _LABEL_INTER_LINE  = 0.25
 
 
+def _draw_vessel_glyph(map_ax, vessel, x, y, scale, style):
+    """Draw the vessel hull glyph at local coords (x, y) without any label."""
+    path = GLYPH_BY_KIND[vessel.kind]()
+    theta = math.radians(vessel.heading_deg)
+    if MAP_ORIENTATION == "seaward_up":
+        rotation = -theta + math.pi / 2
+        translate_x, translate_y = y, x
+    else:
+        rotation = -theta
+        translate_x, translate_y = x, y
+    transform = (Affine2D().scale(scale).rotate(rotation)
+                 .translate(translate_x, translate_y) + map_ax.transData)
+    map_ax.add_patch(PathPatch(path, facecolor=COLOR_VESSEL_FILL, edgecolor=COLOR_INK,
+                               lw=0.7, transform=transform, zorder=9))
+
+
+def _label_candidates(x, y, scale):
+    """Return ordered candidate label positions for a vessel at local coords (x, y).
+
+    Candidates are tried in order; the first that does not collide with an
+    already-placed label is chosen.  Preference: offshore first, then
+    along-shore north and south, then inshore as a last resort.
+
+    Each entry: (label_px, label_py, ha, va, dest_px, dest_py).
+    """
+    gap = scale * _LABEL_SYMBOL_GAP
+    inter = scale * _LABEL_INTER_LINE
+
+    if MAP_ORIENTATION == "seaward_up":
+        # Horizontal axis = y_local (north=left, south=right).
+        # Vertical axis   = x_local (inland=bottom, ocean=top).
+        return [
+            # offshore (upward in display) — preferred
+            (y,       x + gap, "center", "bottom", y,       x + gap - inter),
+            # along-shore north (leftward in display)
+            (y + gap, x,       "right",  "center", y + gap, x - inter),
+            # along-shore south (rightward in display)
+            (y - gap, x,       "left",   "center", y - gap, x - inter),
+            # inshore (downward in display) — last resort
+            (y,       x - gap, "center", "top",    y,       x - gap + inter),
+        ]
+    else:
+        return [
+            (x + gap, y, "left",   "center", x + gap, y - inter),
+            (x - gap, y, "right",  "center", x - gap, y - inter),
+            (x,  y + gap, "center", "bottom", x,  y + gap - inter),
+            (x,  y - gap, "center", "top",    x,  y - gap + inter),
+        ]
+
+
 def draw_vessel(map_ax, vessel, label_side="right", label_dy=0.0):
     """Draw the vessel symbol and its name label.
 
@@ -415,73 +465,25 @@ def draw_vessel(map_ax, vessel, label_side="right", label_dy=0.0):
     after checking for label collisions; draw_vessel never draws it.
     """
     x, y = to_xy(vessel.lat, vessel.lon)
-    path = GLYPH_BY_KIND[vessel.kind]()
     tier = VESSEL_TIER[vessel.kind]
     style = TIER_STYLE[tier]
     scale = style["icon_scale"]
-    theta = math.radians(vessel.heading_deg)
 
-    if MAP_ORIENTATION == "seaward_up":
-        # Plot coords are (y_local, x_local).
-        # The display frame is rotated 90° CCW vs the geographic frame, so
-        # each heading needs +π/2: a north-heading vessel (θ=0) points LEFT
-        # in the display (north=left), which is +π/2 from the glyph's
-        # default "up" orientation.
-        rotation = -theta + math.pi / 2
-        translate_x, translate_y = y, x
-        # Labels: place above the hull (seaward = upward in display).
-        # label_dy nudges horizontally (along-shore = horizontal axis).
-        label_px = y + label_dy
-        label_py = x + scale * _LABEL_SYMBOL_GAP
-        dest_py  = label_py - scale * _LABEL_INTER_LINE
-        label_ha = "center"
-        if abs(label_dy) > 1e-6:
-            map_ax.plot([y + label_dy * 0.55, y], [x + scale * 0.5, x + scale * 0.55],
-                        color=COLOR_INK_SOFT, lw=0.35, alpha=0.30, zorder=9)
-    else:
-        rotation = -theta
-        translate_x, translate_y = x, y
-        label_dx = scale * _LABEL_SYMBOL_GAP if label_side == "right" else -scale * _LABEL_SYMBOL_GAP
-        label_ha = "left" if label_side == "right" else "right"
-        label_px = x + label_dx
-        label_py = y + label_dy
-        dest_py  = label_py - scale * _LABEL_INTER_LINE
-        if abs(label_dy) > 1e-6:
-            leader_x0 = x + (scale * 0.5 if label_side == "right" else -scale * 0.5)
-            map_ax.plot([leader_x0, x + label_dx * 0.55], [y, y + label_dy],
-                        color=COLOR_INK_SOFT, lw=0.35, alpha=0.30, zorder=9)
+    _draw_vessel_glyph(map_ax, vessel, x, y, scale, style)
 
-    transform = (Affine2D().scale(scale).rotate(rotation).translate(translate_x, translate_y)
-                 + map_ax.transData)
-    patch = PathPatch(path, facecolor=COLOR_VESSEL_FILL, edgecolor=COLOR_INK,
-                       lw=0.7, transform=transform, zorder=9)
-    map_ax.add_patch(patch)
+    # Use the first (offshore) candidate; apply a horizontal nudge if given.
+    label_px, label_py, ha, va, dest_px, dest_py = _label_candidates(x, y, scale)[0]
+    if MAP_ORIENTATION == "seaward_up" and abs(label_dy) > 1e-6:
+        label_px += label_dy
+        dest_px  += label_dy
 
     name_text = map_ax.text(
         label_px, label_py, vessel.name,
         fontsize=style["name_fs"],
-        color=COLOR_INK, family=FONT_BODY, ha=label_ha, va="bottom",
+        color=COLOR_INK, family=FONT_BODY, ha=ha, va=va,
         fontweight=style["name_weight"], zorder=10, clip_on=True,
     )
-    return name_text, (label_px, dest_py, label_ha, style)
-
-
-# Per-vessel label placement, keyed by name, chosen against the fixed
-# positions in fixtures.py so labels don't collide. "side" puts the
-# label to the right or left of the vessel icon; "dy" is a small extra
-# vertical nudge in meters for tight clusters.
-LABEL_PLACEMENT = {
-    "OCEAN MAJESTY":    ("right",    0),
-    "HARBOR KING":      ("right",  180),
-    "EVERGLADES PILOT": ("right",   60),
-    "MISS CARLA":       ("right", -180),
-    "GULF VOYAGER":   ("right", 0),
-    "EVER GRANITE":   ("right", 0),
-    "STAR ENDEAVOR":  ("right", 0),
-    "ATLANTIC TRADER":("right", 0),
-    "MAERSK HORIZON": ("right", 0),
-    "CARIBBEAN STAR": ("right", 0),
-}
+    return name_text, (dest_px, dest_py, ha, style)
 
 
 def draw_fleet(map_ax, vessels):
@@ -490,44 +492,76 @@ def draw_fleet(map_ax, vessels):
     `vessels` is a plain list of `harbor_view.providers.models.Vessel`
     objects -- this function (and everything it calls) has no idea
     whether they came from the placeholder fleet, a live AIS feed, or
-    anything else. That's the whole point of Sprint 3's provider
+    anything else.  That's the whole point of Sprint 3's provider
     refactor: the renderer only ever sees `Vessel` objects.
 
     Label placement is two-pass:
-      Pass 1 — draw all symbols and name labels (always shown, no collision
-               check; higher-tier vessels are drawn first so they claim
-               space before lower-priority vessels are checked).
+      Pass 1 — draw all symbols (always shown), then place name labels
+               using four candidate positions (offshore, along-shore north,
+               along-shore south, inshore).  For each vessel the first
+               non-colliding candidate wins; if all four collide the
+               offshore position is kept regardless — vessel names are
+               never omitted.  Higher-tier vessels claim space first.
       Pass 2 — draw destination lines only where they would not overlap an
-               already-placed label bbox.  The name line is always kept;
-               the destination line is silently omitted when space is tight.
+               already-placed label bbox.  The destination line is silently
+               omitted when space is tight; the name line is always kept.
     """
     if not vessels:
         return
 
-    # Higher-tier vessels (cruise > cargo > tanker > pilot/tug) claim label
-    # space first, so their destination lines are the least likely to be
-    # suppressed in a crowded scene.
     priority_sorted = sorted(vessels, key=lambda v: VESSEL_TIER.get(v.kind, 99))
 
-    # Pass 1: draw all vessel symbols and name labels.
-    label_info = []
+    # Pass 1a — draw all glyphs (always shown, no collision check).
+    glyph_data = []
     for vessel in priority_sorted:
-        side, dy = LABEL_PLACEMENT.get(vessel.name, ("right", 0))
-        name_text, dest_anchor = draw_vessel(map_ax, vessel, label_side=side, label_dy=dy)
-        label_info.append((vessel, name_text, dest_anchor))
+        x, y = to_xy(vessel.lat, vessel.lon)
+        tier = VESSEL_TIER[vessel.kind]
+        style = TIER_STYLE[tier]
+        scale = style["icon_scale"]
+        glyph_data.append((vessel, x, y, scale, style))
+        _draw_vessel_glyph(map_ax, vessel, x, y, scale, style)
 
-    # Pass 2: draw destination lines with collision avoidance.
-    # get_renderer() is available on the Agg backend without a prior draw()
-    # call, which is what render_to_image() uses (matplotlib.use("Agg")).
     renderer = map_ax.get_figure().canvas.get_renderer()
 
-    # Seed the placed-bbox list with every name label's bounding box,
-    # padded by a small margin so adjacent labels don't feel cramped.
-    placed = [
-        name_text.get_window_extent(renderer).expanded(1.08, 1.15)
-        for _, name_text, _ in label_info
-    ]
+    # Pass 1b — place name labels with collision avoidance.
+    placed = []
+    label_info = []
 
+    for vessel, x, y, scale, style in glyph_data:
+        candidates = _label_candidates(x, y, scale)
+        name_text = None
+        chosen_dest = None
+
+        for label_px, label_py, ha, va, dest_px, dest_py in candidates:
+            trial = map_ax.text(
+                label_px, label_py, vessel.name,
+                fontsize=style["name_fs"],
+                color=COLOR_INK, family=FONT_BODY, ha=ha, va=va,
+                fontweight=style["name_weight"], zorder=10, clip_on=True,
+            )
+            bbox = trial.get_window_extent(renderer).expanded(1.08, 1.15)
+            if not any(bbox.overlaps(bb) for bb in placed):
+                placed.append(bbox)
+                name_text = trial
+                chosen_dest = (dest_px, dest_py, ha, style)
+                break
+            trial.remove()
+
+        if name_text is None:
+            # All candidates collide: use offshore position anyway.
+            label_px, label_py, ha, va, dest_px, dest_py = candidates[0]
+            name_text = map_ax.text(
+                label_px, label_py, vessel.name,
+                fontsize=style["name_fs"],
+                color=COLOR_INK, family=FONT_BODY, ha=ha, va=va,
+                fontweight=style["name_weight"], zorder=10, clip_on=True,
+            )
+            placed.append(name_text.get_window_extent(renderer).expanded(1.08, 1.15))
+            chosen_dest = (dest_px, dest_py, ha, style)
+
+        label_info.append((vessel, name_text, chosen_dest))
+
+    # Pass 2 — destination labels with collision avoidance.
     for i, (vessel, _name_text, (dest_px, dest_py, dest_ha, style)) in enumerate(label_info):
         dest = vessel.destination
         if not dest:
@@ -539,8 +573,6 @@ def draw_fleet(map_ax, vessels):
             alpha=0.75, zorder=10, clip_on=True,
         )
         dest_bbox = dest_text.get_window_extent(renderer).expanded(1.05, 1.10)
-        # Check against every OTHER placed bbox (skip index i = this vessel's
-        # own name label, which would always overlap the destination).
         if any(dest_bbox.overlaps(bb) for j, bb in enumerate(placed) if j != i):
             dest_text.remove()
         else:
