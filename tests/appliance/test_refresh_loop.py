@@ -39,6 +39,57 @@ def test_render_once_succeeds_and_produces_a_file():
         assert os.path.getsize(out_path) > 0
 
 
+def test_render_once_passes_preferred_canvas_size_from_backend(monkeypatch):
+    """render_once() reads preferred_canvas_size from the backend and passes
+    it as canvas_size to the render function.
+    """
+    import harbor_view.appliance.refresh_loop as loop_module
+    import harbor_view.output as output_module
+
+    received = {}
+
+    def fake_render_fn(vessel_provider, canvas_size=None):
+        received["canvas_size"] = canvas_size
+        from PIL import Image
+        return Image.new("RGB", canvas_size or (2000, 1200))
+
+    class FakeBackendWithPreference:
+        preferred_canvas_size = (800, 480)
+        def write(self, image, path): pass
+
+    monkeypatch.setattr(loop_module, "_get_render_fn", lambda: fake_render_fn)
+    monkeypatch.setattr(output_module, "get_output_backend", lambda: FakeBackendWithPreference())
+
+    with tempfile.TemporaryDirectory() as tmp:
+        render_once(os.path.join(tmp, "out.png"), _OkProvider())
+
+    assert received.get("canvas_size") == (800, 480)
+
+
+def test_render_once_passes_none_canvas_size_for_png_backend(monkeypatch):
+    """PngBackend has no preferred_canvas_size; render_once() must pass canvas_size=None."""
+    import harbor_view.appliance.refresh_loop as loop_module
+    import harbor_view.output as output_module
+
+    received = {}
+
+    def fake_render_fn(vessel_provider, canvas_size=None):
+        received["canvas_size"] = canvas_size
+        from PIL import Image
+        return Image.new("RGB", (2000, 1200))
+
+    class FakeBackendNone:
+        def write(self, image, path): pass  # no preferred_canvas_size
+
+    monkeypatch.setattr(loop_module, "_get_render_fn", lambda: fake_render_fn)
+    monkeypatch.setattr(output_module, "get_output_backend", lambda: FakeBackendNone())
+
+    with tempfile.TemporaryDirectory() as tmp:
+        render_once(os.path.join(tmp, "out.png"), _OkProvider())
+
+    assert received.get("canvas_size") is None
+
+
 def test_render_once_leaves_no_temp_files_behind():
     with tempfile.TemporaryDirectory() as tmp:
         out_path = os.path.join(tmp, "harbor_view.png")

@@ -23,6 +23,9 @@ from PIL import Image
 
 logger = logging.getLogger(__name__)
 
+_DISPLAY_W = 800
+_DISPLAY_H = 480
+
 
 def _fit_to_display(image: Image.Image, display_w: int, display_h: int) -> Image.Image:
     """Return a 1-bit image sized exactly display_w × display_h.
@@ -48,10 +51,15 @@ def _fit_to_display(image: Image.Image, display_w: int, display_h: int) -> Image
 class WaveshareBackend:
     """Push a PIL Image to a Waveshare 7.5" V2 e-paper display."""
 
+    preferred_canvas_size: tuple[int, int] = (_DISPLAY_W, _DISPLAY_H)
+
     def write(self, image: Image.Image, output_path: str) -> None:
         from waveshare_epd import epd7in5_V2
         epd = epd7in5_V2.EPD()
-        panel = _fit_to_display(image, epd.width, epd.height)
+        if image.size == (epd.width, epd.height):
+            panel = image.convert("1")
+        else:
+            panel = _fit_to_display(image, epd.width, epd.height)
         logger.debug(
             "Sending to Waveshare display: %dx%d (panel %dx%d)",
             panel.width, panel.height, epd.width, epd.height,

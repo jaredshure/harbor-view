@@ -117,8 +117,8 @@ def map_coords(x, y):
     return x, y
 
 
-def build_layout():
-    fig = plt.figure(figsize=(FIG_W_IN, FIG_H_IN), dpi=DPI)
+def build_layout(fig_w_in=FIG_W_IN, fig_h_in=FIG_H_IN):
+    fig = plt.figure(figsize=(fig_w_in, fig_h_in), dpi=DPI)
     fig.patch.set_facecolor("#FFFFFF")
 
     m = MARGIN_FRAC
@@ -664,8 +664,9 @@ def draw_sidebar(sidebar_ax, now: _dt.datetime, config: HarborConfig):
     # with equal x/y data-unit scale would look squashed; correct for the
     # real on-figure aspect so hulls keep their intended proportions.
     sidebar_bbox = ax.get_position()
-    sidebar_w_in = sidebar_bbox.width * FIG_W_IN
-    sidebar_h_in = sidebar_bbox.height * FIG_H_IN
+    actual_fig_w, actual_fig_h = ax.get_figure().get_size_inches()
+    sidebar_w_in = sidebar_bbox.width * actual_fig_w
+    sidebar_h_in = sidebar_bbox.height * actual_fig_h
     # data-units-per-inch differs between x and y since both span 0..1
     # over different physical inches; aspect_correction makes 1 unit of
     # glyph-y look the same physical length as 1 unit of glyph-x.
@@ -694,6 +695,7 @@ def draw_sidebar(sidebar_ax, now: _dt.datetime, config: HarborConfig):
 def render_to_image(
     vessel_provider: VesselProvider | None = None,
     config: HarborConfig | None = None,
+    canvas_size: tuple[int, int] | None = None,
 ) -> "PIL.Image.Image":
     """Render Harbor View and return the result as a PIL Image.
 
@@ -706,6 +708,11 @@ def render_to_image(
 
     `config` controls location name, city, home-marker position, and
     timezone.  Defaults to `DEFAULT_CONFIG`.
+
+    `canvas_size` overrides the default 2000×1200 canvas with an explicit
+    (width, height) in pixels.  The figure dimensions are derived by
+    dividing by DPI (200) so the resulting image is exactly canvas_size.
+    Omit (or pass None) to use the module-level FIG_W_IN × FIG_H_IN default.
     """
     import io
     import PIL.Image
@@ -715,7 +722,9 @@ def render_to_image(
     if config is None:
         config = DEFAULT_CONFIG
 
-    fig, sidebar_ax, map_ax = build_layout()
+    _fig_w = canvas_size[0] / DPI if canvas_size is not None else FIG_W_IN
+    _fig_h = canvas_size[1] / DPI if canvas_size is not None else FIG_H_IN
+    fig, sidebar_ax, map_ax = build_layout(fig_w_in=_fig_w, fig_h_in=_fig_h)
 
     # Compute geographic extent first so build_scene clips the coastline
     # geometry to exactly the rendered viewport, not a fixed constant.

@@ -19,7 +19,7 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
-from harbor_view.chart.render import draw_fleet, draw_vessel, render, MAP_ORIENTATION
+from harbor_view.chart.render import draw_fleet, draw_vessel, render, render_to_image, MAP_ORIENTATION
 from harbor_view.providers.base import VesselProvider
 from harbor_view.providers.models import Vessel, VesselType
 from harbor_view.providers.placeholder import PlaceholderProvider
@@ -290,3 +290,35 @@ def test_render_with_unknown_vessel_type_completes():
         render(output_path=out, vessel_provider=_UnknownProvider())
         assert os.path.exists(out)
         assert os.path.getsize(out) > 0
+
+
+# ---------------------------------------------------------------------------
+# Canvas size abstraction — native-resolution rendering
+# ---------------------------------------------------------------------------
+
+def test_render_to_image_default_canvas_size():
+    """render_to_image() with no canvas_size produces a 2000×1200 image."""
+    img = render_to_image(vessel_provider=_EmptyProvider())
+    assert img.size == (2000, 1200), (
+        f"Expected default canvas 2000×1200, got {img.size}"
+    )
+
+
+def test_render_to_image_explicit_canvas_size():
+    """render_to_image(canvas_size=(800, 480)) produces exactly an 800×480 image."""
+    img = render_to_image(vessel_provider=_EmptyProvider(), canvas_size=(800, 480))
+    assert img.size == (800, 480), (
+        f"Expected canvas 800×480, got {img.size}"
+    )
+
+
+def test_render_to_image_explicit_canvas_size_with_vessels():
+    """canvas_size works end-to-end with a real vessel -- no crash, correct size."""
+    img = render_to_image(vessel_provider=_OneVesselProvider(), canvas_size=(800, 480))
+    assert img.size == (800, 480)
+
+
+def test_render_to_image_custom_canvas_size():
+    """canvas_size accepts arbitrary pixel dimensions divisible by DPI."""
+    img = render_to_image(vessel_provider=_EmptyProvider(), canvas_size=(1000, 600))
+    assert img.size == (1000, 600)
