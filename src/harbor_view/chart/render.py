@@ -386,14 +386,13 @@ VESSEL_TIER = {
 # loses weight, and route-line opacity/length fades, going down the
 # hierarchy.
 TIER_STYLE = {
-    # name_fs ~30% larger than before; detail_fs ~75% of name_fs so the
-    # destination line is clearly subordinate but still legible at chart
-    # scale. icon_scale unchanged.
-    1: dict(icon_scale=360, name_fs=7.2, detail_fs=5.4, name_weight="bold"),
-    2: dict(icon_scale=300, name_fs=6.2, detail_fs=4.7, name_weight="normal"),
-    3: dict(icon_scale=260, name_fs=5.7, detail_fs=4.3, name_weight="normal"),
-    4: dict(icon_scale=210, name_fs=5.2, detail_fs=3.9, name_weight="normal"),
-    5: dict(icon_scale=190, name_fs=4.8, detail_fs=3.6, name_weight="normal"),
+    # name_fs reduced ~17% from previous values; detail_fs at 75% of name_fs.
+    # icon_scale and name_weight unchanged.
+    1: dict(icon_scale=360, name_fs=6.0, detail_fs=4.5, name_weight="bold"),
+    2: dict(icon_scale=300, name_fs=5.2, detail_fs=3.9, name_weight="normal"),
+    3: dict(icon_scale=260, name_fs=4.7, detail_fs=3.5, name_weight="normal"),
+    4: dict(icon_scale=210, name_fs=4.3, detail_fs=3.2, name_weight="normal"),
+    5: dict(icon_scale=190, name_fs=4.0, detail_fs=3.0, name_weight="normal"),
 }
 
 # Spacing fractions relative to the per-tier icon_scale (in data-coord metres).
