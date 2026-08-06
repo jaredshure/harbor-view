@@ -45,30 +45,29 @@ OUTPUT_PATH = os.path.join(
 )
 
 # ---------------------------------------------------------------------------
-# Palette — monochrome warm paper, matching the reference design.
-# Sprint 7.4: removed blue-teal ocean fill; ocean and land now share the
-# same warm cream/gray paper tone, differentiated by shoreline strokes and
-# depth contour lines rather than fill color.
+# Palette — nautical chart tones meeting wall-art restraint.
+# Sprint 8: re-introduces water-vs-land colour differentiation that was
+# removed in 7.4.  Ocean is now a desaturated blue-gray (reads clearly as
+# water against the warm cream land) and contour/sounding colours are
+# tuned to work on that ground.  Warm paper tone is preserved for land
+# and sidebar so the overall character stays engraved-print rather than
+# screen-map.
 # ---------------------------------------------------------------------------
-COLOR_OCEAN = "#EAE6DC"
-COLOR_OCEAN_DEEP = "#DEDAD0"
-COLOR_LAND = "#EFE6D0"
-COLOR_ICW_WATER = "#EAE6DC"
-COLOR_SHORE_LINE = "#8C7A56"
-COLOR_CONTOUR = "#7A7368"
-COLOR_LANE = "#8A867A"
-COLOR_INK = "#33312C"
-COLOR_INK_SOFT = "#5C5A52"
-COLOR_SIDEBAR_BG = "#F4EFE3"
-COLOR_RULE = "#D9D0B8"
-# Sprint 2.5 (Priority 3): a hull fill blended toward the ocean tone
-# rather than flat cream, so vessels sit IN the water visually instead
-# of looking pasted on top of it.
-COLOR_VESSEL_FILL = "#E3EDEE"
-# Sprint 2.5 (Priority 4): an even lighter tone than COLOR_INK_SOFT,
-# reserved for the smallest "metadata" text (vessel route lines) so
-# names clearly outrank routes in the type hierarchy.
-COLOR_METADATA = "#7A776C"
+COLOR_OCEAN      = "#C5D2D5"   # near-shore Atlantic: pale blue-gray
+COLOR_OCEAN_DEEP = "#B0BEC6"   # offshore: deeper, cooler blue-gray
+COLOR_LAND       = "#F0E8D4"   # warm cream land — slightly warmer than before
+COLOR_ICW_WATER  = "#BCC9C6"   # ICW/Intracoastal: slightly greener (calmer water)
+COLOR_SHORE_LINE = "#4A4036"   # dark warm-black: ocean shore (heavier, engraved)
+COLOR_SHORE_ICW  = "#7A6E56"   # medium brown: ICW shore (secondary weight)
+COLOR_CONTOUR    = "#7A8E97"   # muted blue-gray: depth contours match water ground
+COLOR_SOUNDING   = "#637880"   # depth-sounding numbers — italic, scattered
+COLOR_LANE       = "#7A8E97"   # traffic-lane lines: same tone as contours
+COLOR_INK        = "#33312C"   # warm near-black ink
+COLOR_INK_SOFT   = "#5C5A52"   # secondary ink
+COLOR_SIDEBAR_BG = "#F4EFE3"   # sidebar warm cream
+COLOR_RULE       = "#D9D0B8"   # divider rule
+COLOR_VESSEL_FILL = "#E3EDEE"  # hull fill: slightly blue so vessels sit in water
+COLOR_METADATA   = "#7A776C"   # secondary text (destination lines)
 
 FONT_DISPLAY = "DejaVu Serif"
 FONT_BODY = "DejaVu Sans"
@@ -233,35 +232,60 @@ def draw_basemap(map_ax, scene, x_min, x_max, y_min, y_max):
                     edgecolor="none", zorder=3)
 
     # --- Shoreline strokes ---
-    map_ax.plot(*map_coords(ox, oy), color=COLOR_SHORE_LINE, lw=1.0, zorder=4, solid_joinstyle="round")
-    map_ax.plot(*map_coords(ix[~is_open], iy[~is_open]), color=COLOR_SHORE_LINE, lw=0.8,
+    # Ocean shore: heaviest line on the map — the primary cartographic edge.
+    # Shadow pass first (slightly offset inward, low alpha) for an engraved-
+    # depth effect that grounds the shoreline in the water plane.
+    map_ax.plot(*map_coords(ox, oy), color=COLOR_SHORE_LINE, lw=3.5, alpha=0.12,
+                zorder=3, solid_joinstyle="round")
+    map_ax.plot(*map_coords(ox, oy), color=COLOR_SHORE_LINE, lw=1.5, zorder=4,
+                solid_joinstyle="round", solid_capstyle="round")
+    # ICW shore (island's inshore edge): secondary weight.
+    map_ax.plot(*map_coords(ix[~is_open], iy[~is_open]), color=COLOR_SHORE_ICW, lw=0.9,
                 zorder=4, solid_joinstyle="round")
-    map_ax.plot(*map_coords(mx, my), color=COLOR_SHORE_LINE, lw=0.6, alpha=0.55, zorder=4)
+    # Mainland edge: background context — lightest, barely-there.
+    map_ax.plot(*map_coords(mx, my), color=COLOR_SHORE_ICW, lw=0.55, alpha=0.45, zorder=4)
+
+    # --- Port Everglades channel centerline ---
+    # A short dashed line through the inlet narrows — classic chart notation
+    # for a dredged navigation channel.  Coordinates come from the channel
+    # polygon that was already computed from the same shore arrays.
+    chan_x, chan_y = scene["inlet_channel_polygon"]
+    if len(chan_x):
+        # Midpoint x-range of the channel polygon (ICW side to ocean side)
+        ctr_x = (chan_x.min() + chan_x.max()) / 2.0
+        # y-range: pe_y ± a small band
+        pe_y_est = (chan_y.min() + chan_y.max()) / 2.0
+        cl_x = np.array([chan_x.min(), chan_x.max()])
+        cl_y = np.array([pe_y_est, pe_y_est])
+        map_ax.plot(*map_coords(cl_x, cl_y), color=COLOR_SHORE_LINE,
+                    lw=0.6, ls=(0, (4, 4)), alpha=0.55, zorder=5)
 
 
 def draw_depth_contours(map_ax, x_min, x_max, y_min, y_max, scene):
-    """Bathymetric-style depth contours spanning the full ocean width,
-    labeled with approximate depths. Purely decorative — art piece, not
-    navigational. Approximate Fort Lauderdale coastal profile.
+    """Bathymetric-style depth contours and scattered soundings.
 
-    Sprint 7.3: extended to cover the full ~6 nm viewport and opacity
-    raised to legible levels, matching the reference design where
-    contour lines are the primary treatment of the ocean surface.
+    Contours span the full ocean width roughly parallel to the shore;
+    sounding numbers (single italic values scattered in the ocean) give the
+    classic NOAA-chart texture.  Purely decorative — art piece, not
+    navigational.  Approximates the real Fort Lauderdale shelf profile.
+
+    Sprint 8: opacity raised to make contours a primary visual element of
+    the ocean surface; added scattered depth-sounding numbers in NOAA style.
     """
     ox, oy = scene["ocean_shore"]
 
     # (offshore_m, depth_label_ft) — approx. Fort Lauderdale shelf profile
     contour_defs = [
-        (700,   20),
-        (1500,  40),
-        (2500,  60),
-        (3800,  80),
-        (5400, 100),
-        (7200, 120),
-        (9200, 140),
+        (600,   20),
+        (1400,  40),
+        (2400,  60),
+        (3700,  80),
+        (5200, 100),
+        (7000, 120),
+        (9000, 140),
     ]
 
-    # Label y-positions: spread top-to-bottom so successive labels don't collide
+    # Label y-positions spread top-to-bottom to avoid collision
     label_y_fracs = [0.87, 0.73, 0.58, 0.42, 0.27, 0.14, 0.04]
 
     rng = np.random.default_rng(42)
@@ -272,22 +296,73 @@ def draw_depth_contours(map_ax, x_min, x_max, y_min, y_max, scene):
         mask = cx <= x_max
         if not mask.any():
             continue
-        alpha = max(0.12, 0.30 - i * 0.023)
-        map_ax.plot(*map_coords(cx[mask], cy[mask]), color=COLOR_CONTOUR, lw=0.65,
+        # Sprint 8: opacity lifted from 0.12–0.30 → 0.28–0.50 so contours
+        # are a genuine visual element of the ocean, not just a hint.
+        alpha = max(0.28, 0.52 - i * 0.032)
+        lw = 0.80 if i == 0 else 0.65
+        map_ax.plot(*map_coords(cx[mask], cy[mask]), color=COLOR_CONTOUR, lw=lw,
                     alpha=alpha, zorder=5)
-        # Depth label: near the far-offshore edge, spread along-shore.
-        # In seaward_up offshore is the top (high x_local) and along-shore
-        # is horizontal (y_local), so we swap the label coordinates.
-        label_x = x_min + (x_max - x_min) * 0.95
-        label_y = y_min + (y_max - y_min) * label_y_fracs[i]
+        # Depth label along each contour: two placements (spaced thirds) so
+        # one is always in the visible window.
+        for frac in [0.25, 0.70]:
+            label_y_val = y_min + (y_max - y_min) * frac
+            if MAP_ORIENTATION == "seaward_up":
+                text_px = label_y_val
+                # interpolate contour x at this y
+                idx = np.argmin(np.abs(cy - label_y_val))
+                text_py = cx[idx] if mask[idx] else off
+            else:
+                label_x_val = x_min + (x_max - x_min) * 0.95
+                text_px, text_py = label_x_val, label_y_val
+            map_ax.text(
+                text_px, text_py, str(depth_ft),
+                ha="center", va="center",
+                fontsize=4.5, color=COLOR_CONTOUR, alpha=0.70,
+                fontstyle="italic", family=FONT_BODY, zorder=5,
+            )
+
+    # --- Scattered depth soundings (NOAA-chart style) ---
+    # Single italic numbers placed at points in the ocean to texture the
+    # water surface.  Positions are deterministic; depths are approximate
+    # (derived from the same shelf profile, not actual survey data).
+    # In seaward_up: text position (plot_x, plot_y) = (y_local, x_local).
+    # Sounding = approximate depth in feet at that offshore distance.
+    soundings = [
+        # (x_local_m, y_local_m, depth_ft)  — along-shore from -7000 to +7000 NM
+        ( 300,  5500,  12),
+        ( 550, -3200,  18),
+        ( 700,  1800,  24),
+        ( 900, -5800,  28),
+        (1100,  4200,  36),
+        (1300, -1600,  42),
+        (1600,  6500,  50),
+        (1800, -4500,  55),
+        (2000,  2600,  62),
+        (2300, -700,   68),
+        (2700,  5200,  78),
+        (3100, -3100,  84),
+        (3500,  800,   90),
+        (3900,  4000,  98),
+        (4400, -2400, 108),
+        (4900,  6200, 115),
+        (5500, -5600, 124),
+        (6000,  1200, 130),
+        (6800,  3800, 138),
+        (7500, -4200, 145),
+        (8500,  2500, 152),
+        (9500, -1800, 158),
+    ]
+    for x_loc, y_loc, depth in soundings:
+        if x_loc > x_max or y_loc < y_min or y_loc > y_max:
+            continue
         if MAP_ORIENTATION == "seaward_up":
-            text_px, text_py = label_y, label_x
+            tx, ty = y_loc, x_loc
         else:
-            text_px, text_py = label_x, label_y
+            tx, ty = x_loc, y_loc
         map_ax.text(
-            text_px, text_py, str(depth_ft),
+            tx, ty, str(depth),
             ha="center", va="center",
-            fontsize=5.5, color=COLOR_CONTOUR, alpha=0.60,
+            fontsize=4.0, color=COLOR_SOUNDING, alpha=0.65,
             fontstyle="italic", family=FONT_BODY, zorder=5,
         )
 
@@ -312,6 +387,108 @@ def draw_shipping_lanes(map_ax, x_min, x_max, y_min, y_max):
         ys = y0 + (ys - y0) * bend + (1 - bend) * 0
         map_ax.plot(*map_coords(xs, ys), color=COLOR_LANE, lw=0.9, ls=(0, (6, 5)),
                     alpha=0.55, zorder=6)
+
+
+def draw_geographic_labels(map_ax, scene, x_min, x_max, y_min, y_max):
+    """Ocean-area name and inlet label in classic NOAA chart typography.
+
+    Text is letter-spaced, italic, and low-opacity so it reads as engraved
+    onto the chart rather than added on top of it.
+    """
+    ox, oy = scene["ocean_shore"]
+
+    # "ATLANTIC OCEAN" — large, spaced, italic — centred in open water.
+    if MAP_ORIENTATION == "seaward_up":
+        ocean_tx = (y_min + y_max) / 2.0           # centre along-shore
+        ocean_ty = x_min + (x_max - x_min) * 0.60  # 60% into the seaward depth
+        ocean_rot = 0
+    else:
+        ocean_tx = x_min + (x_max - x_min) * 0.60
+        ocean_ty = (y_min + y_max) / 2.0
+        ocean_rot = 90
+    map_ax.text(
+        ocean_tx, ocean_ty,
+        "A T L A N T I C   O C E A N",
+        ha="center", va="center",
+        fontsize=7.0, color=COLOR_INK, alpha=0.28,
+        fontstyle="italic", family=FONT_DISPLAY,
+        rotation=ocean_rot, zorder=6,
+    )
+
+    # "PORT EVERGLADES" — just offshore from the inlet channel.
+    _, pe_y = to_xy(26.0906, -80.1095)
+    if y_min <= pe_y <= y_max:
+        idx = int(np.argmin(np.abs(oy - pe_y)))
+        pe_shore_x = ox[idx]
+        if MAP_ORIENTATION == "seaward_up":
+            pe_tx = pe_y
+            pe_ty = pe_shore_x + (x_max - pe_shore_x) * 0.15
+        else:
+            pe_tx = pe_shore_x + (x_max - pe_shore_x) * 0.15
+            pe_ty = pe_y
+        map_ax.text(
+            pe_tx, pe_ty, "PORT EVERGLADES",
+            ha="center", va="center",
+            fontsize=4.8, color=COLOR_INK, alpha=0.52,
+            fontstyle="italic", family=FONT_DISPLAY, zorder=6,
+        )
+
+
+def draw_scale_bar(map_ax, x_min, x_max, y_min, y_max):
+    """2-NM NOAA-style scale bar with alternating fill segments.
+
+    Placed in the lower-left of the ocean area (north end, near-shore in
+    seaward_up orientation) to avoid overlapping the compass rose.
+    """
+    bar_h = (x_max - x_min) * 0.0065   # bar thickness in local metres
+
+    if MAP_ORIENTATION == "seaward_up":
+        # plot_x = y_local (left=y_max=north), plot_y = x_local (bottom=x_min)
+        bar_sx = y_max - (y_max - y_min) * 0.09    # near north (left) edge
+        bar_y  = x_min + (x_max - x_min) * 0.26    # just into the ocean
+        segs  = [(bar_sx, bar_sx - NM), (bar_sx - NM, bar_sx - 2 * NM)]
+        tick_xs = [bar_sx, bar_sx - NM, bar_sx - 2 * NM]
+        nm_lx, nm_ha = bar_sx - 2 * NM - (y_max - y_min) * 0.008, "right"
+    else:
+        bar_sx = x_min + (x_max - x_min) * 0.06
+        bar_y  = y_min + (y_max - y_min) * 0.06
+        segs  = [(bar_sx, bar_sx + NM), (bar_sx + NM, bar_sx + 2 * NM)]
+        tick_xs = [bar_sx, bar_sx + NM, bar_sx + 2 * NM]
+        nm_lx, nm_ha = bar_sx + 2 * NM + (x_max - x_min) * 0.008, "left"
+
+    seg_colors = [COLOR_INK, "#FFFFFF"]
+    for k, (sx, ex) in enumerate(segs):
+        rect = mpatches.Rectangle(
+            (min(sx, ex), bar_y - bar_h / 2), abs(ex - sx), bar_h,
+            facecolor=seg_colors[k % 2], edgecolor=COLOR_INK,
+            lw=0.5, alpha=0.70, zorder=7,
+        )
+        map_ax.add_patch(rect)
+
+    tick_h = bar_h * 2.0
+    for tx in tick_xs:
+        map_ax.plot([tx, tx], [bar_y - bar_h / 2, bar_y + tick_h],
+                    color=COLOR_INK, lw=0.5, alpha=0.70, zorder=7)
+
+    for tx, label in zip(tick_xs, ["0", "1", "2"]):
+        map_ax.text(tx, bar_y + tick_h * 1.4, label,
+                    ha="center", va="bottom",
+                    fontsize=3.8, color=COLOR_INK, alpha=0.70,
+                    family=FONT_BODY, zorder=7)
+
+    map_ax.text(nm_lx, bar_y, "NM",
+                ha=nm_ha, va="center",
+                fontsize=3.8, color=COLOR_INK, alpha=0.70,
+                family=FONT_BODY, zorder=7)
+
+
+def draw_chart_border(map_ax):
+    """Thin engraved-style rule around the map panel perimeter."""
+    for spine in map_ax.spines.values():
+        spine.set_visible(True)
+        spine.set_linewidth(0.8)
+        spine.set_color(COLOR_SHORE_LINE)
+        spine.set_alpha(0.35)
 
 
 def draw_compass_rose(map_ax, x_min, x_max, y_min, y_max):
@@ -790,6 +967,9 @@ def render_to_image(
     draw_basemap(map_ax, scene, x_min, x_max, y_min, y_max)
     draw_depth_contours(map_ax, x_min, x_max, y_min, y_max, scene)
     draw_shipping_lanes(map_ax, x_min, x_max, y_min, y_max)
+    draw_geographic_labels(map_ax, scene, x_min, x_max, y_min, y_max)
+    draw_scale_bar(map_ax, x_min, x_max, y_min, y_max)
+    draw_chart_border(map_ax)
     draw_compass_rose(map_ax, x_min, x_max, y_min, y_max)
     draw_fleet(map_ax, vessel_provider.get_vessels())
     draw_home_marker(map_ax, scene, config)
